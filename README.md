@@ -8,9 +8,12 @@ plugin removes only top-level `reasoning` and `compaction` input items plus
 `previous_response_id`. Nested `agent_message` content and tool payloads are
 left untouched.
 
-The plugin does not decrypt, inspect, persist, or forward encrypted reasoning
-content. It keeps state in memory only and fails closed when the request cannot
-be safely associated with a stable session and selected auth identity.
+The plugin never decrypts or persists raw encrypted reasoning content. It reads
+only the route-bound item fields needed to compute process-local keyed
+fingerprints, passes same-route encrypted reasoning through unchanged, and
+removes it selectively when the route is unsafe. It keeps routing state in
+memory only and fails closed when the request cannot be safely associated with a
+stable session and selected auth identity.
 
 ## Why this exists
 
@@ -93,6 +96,7 @@ random process-local HMAC key to compare opaque top-level item fingerprints.
 ```powershell
 $go = 'C:\Program Files\Go\bin\go.exe'
 & $go test ./...
+& $go test -race ./...
 & $go vet ./...
 ```
 
