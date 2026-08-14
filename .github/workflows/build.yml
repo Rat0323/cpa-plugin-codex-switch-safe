@@ -134,4 +134,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sort dist/*.sha256 > dist/checksums.txt
-          gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt --verify-tag --title "${GITHUB_REF_NAME}" --notes "Automated release for ${GITHUB_REF_NAME}."
+          gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes
