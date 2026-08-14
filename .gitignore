@@ -1,0 +1,11 @@
+dist/
+auth/
+smoke/auth/
+smoke/plugins/
+*.so
+*.dylib
+*.dll
+*.h
+*.zip
+*.sha256
+checksums.txt
