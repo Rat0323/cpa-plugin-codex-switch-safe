@@ -24,10 +24,13 @@ re-establish reasoning for that turn.
 ## Safety model
 
 - Stable session identity: CPA `execution_session_id` first, then Codex
-  session/thread headers or payload metadata. Per-turn IDs are ignored.
+  session/thread headers, payload metadata, and `prompt_cache_key` fallbacks.
+  Per-turn IDs are ignored.
 - Route identity: CPA `selected_auth_id`, selected model, and `ToFormat: codex`.
 - Retry aware: a request ID keeps only its latest after-auth candidate; a route
-  is committed only after lifecycle outcome `succeeded`.
+  is committed only after lifecycle outcome `succeeded`. Route-bound item
+  fingerprints are also committed only for that successful candidate, so a
+  failed failover does not retire valid state from the original route.
 - Failover aware: failed, rejected, canceled, and expired attempts do not
   advance the committed route.
 - Subagent aware: independent execution sessions are isolated. Same-session
@@ -37,6 +40,9 @@ re-establish reasoning for that turn.
   `compaction_policy: strip` only when availability is more important than
   preserving compaction context.
 - Bounded memory: state is process-local with configurable TTL and entry caps.
+  Each session keeps a bounded retired-item barrier; if it overflows, that
+  session conservatively full-strips top-level reasoning/compaction until its
+  state expires instead of allowing an old item to be forgotten and replayed.
 
 This plugin does not serialize model requests and cannot make ciphertext from a
 different credential decryptable. It deliberately prefers a clean continuation
@@ -72,7 +78,8 @@ plugins:
 `strip`; `block` is the recommended default.
 
 The plugin has no network access, does not write files, and never stores raw
-request bodies, tokens, authorization headers, or encrypted content.
+request bodies, tokens, authorization headers, or encrypted content. It uses a
+random process-local HMAC key to compare opaque top-level item fingerprints.
 
 ## Development
 

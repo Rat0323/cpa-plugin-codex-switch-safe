@@ -70,26 +70,33 @@ const (
 )
 
 type routeDecision struct {
-	Relation routeRelation
-	Strip    bool
-	Reject   bool
+	Relation                routeRelation
+	Strip                   bool
+	Reject                  bool
+	BlockedItemFingerprints []string
 }
 
+const maxRetiredItemFingerprintsPerSession = 256
+
 type sessionRouteState struct {
-	Route     routeFingerprint
-	HasRoute  bool
-	Sequence  uint64
-	UpdatedAt time.Time
-	Tainted   bool
+	Route           routeFingerprint
+	HasRoute        bool
+	Sequence        uint64
+	UpdatedAt       time.Time
+	Tainted         bool
+	RetiredItems    map[string]uint64
+	RetiredOverflow bool
 }
 
 type pendingRoute struct {
-	SessionKey    string
-	Route         routeFingerprint
-	Sequence      uint64
-	ObservedAt    time.Time
-	CleanStart    bool
-	CanClearTaint bool
+	SessionKey              string
+	Route                   routeFingerprint
+	RouteKnown              bool
+	Sequence                uint64
+	ObservedAt              time.Time
+	CleanStart              bool
+	CanClearTaint           bool
+	RetiredItemFingerprints []string
 }
 
 type routeStateStore struct {
@@ -140,7 +147,29 @@ func (s *routeStateStore) prepare(requestID, sessionKey string, route routeFinge
 	decision := routeDecision{Relation: routeRelationUnknown}
 	canTrack := sessionKey != "" && routeKnown
 	if !canTrack {
-		return failClosedDecision(signals, s.cfg.CompactionPolicy)
+		decision = failClosedDecision(signals, s.cfg.CompactionPolicy)
+		if decision.Reject && sessionKey != "" {
+			session := s.retireItemsLocked(s.sessions[sessionKey], signals.ItemFingerprints, now)
+			s.sessions[sessionKey] = session
+			s.trimSessionsLocked()
+		}
+		if decision.Strip && sessionKey != "" && requestID != "" {
+			session := s.sessions[sessionKey]
+			session.UpdatedAt = now
+			s.sessions[sessionKey] = session
+			s.trimSessionsLocked()
+			s.sequence++
+			s.pending[pendingKey(requestID)] = pendingRoute{
+				SessionKey:              sessionKey,
+				RouteKnown:              false,
+				Sequence:                s.sequence,
+				ObservedAt:              now,
+				CleanStart:              true,
+				RetiredItemFingerprints: uniqueFingerprints(signals.ItemFingerprints),
+			}
+			s.trimPendingLocked()
+		}
+		return decision
 	}
 
 	session, hasSession := s.sessions[sessionKey]
@@ -156,6 +185,11 @@ func (s *routeStateStore) prepare(requestID, sessionKey string, route routeFinge
 	if session.HasRoute && !session.Tainted {
 		if session.Route.equal(route) {
 			decision.Relation = routeRelationSame
+			if session.RetiredOverflow && (signals.HasReasoning || signals.HasCompaction) {
+				decision.Strip = true
+			} else {
+				decision.BlockedItemFingerprints = retiredItemMatches(session.RetiredItems, signals.ItemFingerprints)
+			}
 		} else {
 			decision.Relation = routeRelationChanged
 		}
@@ -166,6 +200,11 @@ func (s *routeStateStore) prepare(requestID, sessionKey string, route routeFinge
 	unsafeState := signals.hasRouteBoundState() && (session.Tainted || decision.Relation != routeRelationSame)
 	if unsafeState && signals.HasCompaction && s.cfg.CompactionPolicy == compactionPolicyBlock {
 		decision.Reject = true
+		if sessionKey != "" {
+			session = s.retireItemsLocked(session, signals.ItemFingerprints, now)
+			s.sessions[sessionKey] = session
+			s.trimSessionsLocked()
+		}
 		return decision
 	}
 	if unsafeState {
@@ -183,14 +222,20 @@ func (s *routeStateStore) prepare(requestID, sessionKey string, route routeFinge
 	s.trimSessionsLocked()
 
 	cleanStart := decision.Strip || !signals.hasRouteBoundState()
+	var retiredItemFingerprints []string
+	if decision.Strip {
+		retiredItemFingerprints = uniqueFingerprints(signals.ItemFingerprints)
+	}
 	s.sequence++
 	s.pending[pendingKey(requestID)] = pendingRoute{
-		SessionKey:    sessionKey,
-		Route:         route,
-		Sequence:      s.sequence,
-		ObservedAt:    now,
-		CleanStart:    cleanStart,
-		CanClearTaint: session.Tainted && cleanStart && !hasOtherPending,
+		SessionKey:              sessionKey,
+		Route:                   route,
+		RouteKnown:              true,
+		Sequence:                s.sequence,
+		ObservedAt:              now,
+		CleanStart:              cleanStart,
+		CanClearTaint:           session.Tainted && cleanStart && !hasOtherPending,
+		RetiredItemFingerprints: retiredItemFingerprints,
 	}
 	s.trimPendingLocked()
 	return decision
@@ -207,6 +252,75 @@ func failClosedDecision(signals stateSignals, policy compactionPolicy) routeDeci
 	}
 	decision.Strip = true
 	return decision
+}
+
+func (s *routeStateStore) retireItemsLocked(session sessionRouteState, fingerprints []string, now time.Time) sessionRouteState {
+	if len(fingerprints) == 0 {
+		session.UpdatedAt = now
+		return session
+	}
+	if session.RetiredItems == nil {
+		session.RetiredItems = make(map[string]uint64)
+	}
+	for _, fingerprint := range fingerprints {
+		if fingerprint == "" {
+			continue
+		}
+		s.sequence++
+		session.RetiredItems[fingerprint] = s.sequence
+	}
+	for len(session.RetiredItems) > maxRetiredItemFingerprintsPerSession {
+		session.RetiredOverflow = true
+		var oldestFingerprint string
+		var oldestSequence uint64
+		for fingerprint, sequence := range session.RetiredItems {
+			if oldestFingerprint == "" || sequence < oldestSequence || (sequence == oldestSequence && fingerprint < oldestFingerprint) {
+				oldestFingerprint = fingerprint
+				oldestSequence = sequence
+			}
+		}
+		delete(session.RetiredItems, oldestFingerprint)
+	}
+	session.UpdatedAt = now
+	return session
+}
+
+func uniqueFingerprints(fingerprints []string) []string {
+	if len(fingerprints) == 0 {
+		return nil
+	}
+	unique := make([]string, 0, len(fingerprints))
+	seen := make(map[string]struct{}, len(fingerprints))
+	for _, fingerprint := range fingerprints {
+		if fingerprint == "" {
+			continue
+		}
+		if _, exists := seen[fingerprint]; exists {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		unique = append(unique, fingerprint)
+	}
+	return unique
+}
+
+func retiredItemMatches(retired map[string]uint64, observed []string) []string {
+	if len(retired) == 0 || len(observed) == 0 {
+		return nil
+	}
+	matches := make([]string, 0, len(observed))
+	seen := make(map[string]struct{}, len(observed))
+	for _, fingerprint := range observed {
+		if _, exists := retired[fingerprint]; !exists {
+			continue
+		}
+		if _, duplicate := seen[fingerprint]; duplicate {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		matches = append(matches, fingerprint)
+	}
+	return matches
 }
 
 func (s *routeStateStore) complete(completion pluginapi.RequestCompletion) {
@@ -234,8 +348,13 @@ func (s *routeStateStore) complete(completion pluginapi.RequestCompletion) {
 	}
 
 	if completion.Outcome == pluginapi.RequestCompletionSucceeded {
+		if len(pending.RetiredItemFingerprints) > 0 {
+			current = s.retireItemsLocked(current, pending.RetiredItemFingerprints, now)
+		}
 		applied := false
-		if !current.HasRoute || pending.Sequence >= current.Sequence {
+		if !pending.RouteKnown {
+			applied = true
+		} else if !current.HasRoute || pending.Sequence >= current.Sequence {
 			current.Route = pending.Route
 			current.HasRoute = true
 			current.Sequence = pending.Sequence
@@ -244,7 +363,7 @@ func (s *routeStateStore) complete(completion pluginapi.RequestCompletion) {
 		}
 		// A tainted session can only become reusable after an unambiguous clean
 		// request completed while no other request in that session was active.
-		if pending.CanClearTaint && pending.CleanStart && applied && !s.hasPendingForSessionLocked(pending.SessionKey) {
+		if pending.RouteKnown && pending.CanClearTaint && pending.CleanStart && applied && !s.hasPendingForSessionLocked(pending.SessionKey) {
 			current.Tainted = false
 		}
 		s.sessions[pending.SessionKey] = current
@@ -308,13 +427,28 @@ func (s *routeStateStore) purgeExpiredLocked(now time.Time) {
 }
 
 func (s *routeStateStore) trimSessionsLocked() {
+	activeSessions := make(map[string]struct{})
+	for _, pending := range s.pending {
+		activeSessions[pending.SessionKey] = struct{}{}
+	}
 	for len(s.sessions) > s.cfg.MaxSessions {
 		var oldestKey string
 		var oldest sessionRouteState
 		for key, state := range s.sessions {
+			if _, active := activeSessions[key]; active {
+				continue
+			}
 			if oldestKey == "" || state.UpdatedAt.Before(oldest.UpdatedAt) || (state.UpdatedAt.Equal(oldest.UpdatedAt) && key < oldestKey) {
 				oldestKey = key
 				oldest = state
+			}
+		}
+		if oldestKey == "" {
+			for key, state := range s.sessions {
+				if oldestKey == "" || state.UpdatedAt.Before(oldest.UpdatedAt) || (state.UpdatedAt.Equal(oldest.UpdatedAt) && key < oldestKey) {
+					oldestKey = key
+					oldest = state
+				}
 			}
 		}
 		delete(s.sessions, oldestKey)

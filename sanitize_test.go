@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -92,6 +93,46 @@ func TestStripRouteBoundStateKeepsCleanPayloadByteForByte(t *testing.T) {
 	}
 	if string(updated) != string(payload) {
 		t.Fatalf("clean payload changed\n got: %s\nwant: %s", updated, payload)
+	}
+}
+
+func TestStripRetiredRouteBoundItemsKeepsCurrentRouteState(t *testing.T) {
+	payload := []byte(`{
+  "previous_response_id":"resp-current",
+  "input":[
+    {"type":"reasoning","id":"rs-retired","encrypted_content":"foreign"},
+    {"type":"reasoning","id":"rs-current","encrypted_content":"current"},
+    {"type":"message","role":"user","content":"continue"}
+  ]
+}`)
+	inspection, errInspect := inspectPayload(payload)
+	if errInspect != nil {
+		t.Fatal(errInspect)
+	}
+	if len(inspection.Signals.ItemFingerprints) != 2 {
+		t.Fatalf("item fingerprints = %d, want 2", len(inspection.Signals.ItemFingerprints))
+	}
+
+	updated, changed, errStrip := inspection.stripRetiredRouteBoundItems(inspection.Signals.ItemFingerprints[:1])
+	if errStrip != nil || !changed {
+		t.Fatalf("stripRetiredRouteBoundItems() changed=%v, err=%v", changed, errStrip)
+	}
+	if !bytes.Contains(updated, []byte(`"previous_response_id":"resp-current"`)) {
+		t.Fatalf("previous_response_id was removed: %s", updated)
+	}
+	if bytes.Contains(updated, []byte("rs-retired")) {
+		t.Fatalf("retired reasoning survived: %s", updated)
+	}
+	if !bytes.Contains(updated, []byte("rs-current")) || !bytes.Contains(updated, []byte("continue")) {
+		t.Fatalf("current-route input was removed: %s", updated)
+	}
+}
+
+func TestRouteBoundItemFingerprintIsStableAcrossSerialization(t *testing.T) {
+	_, first, okFirst := routeBoundInputItem([]byte(`{"type":"reasoning","summary":[],"encrypted_content":"opaque"}`))
+	_, second, okSecond := routeBoundInputItem([]byte(`{"encrypted_content":"opaque","summary":[],"type":"reasoning"}`))
+	if !okFirst || !okSecond || first == "" || first != second {
+		t.Fatalf("fingerprints = %q, %q; ok=%v,%v", first, second, okFirst, okSecond)
 	}
 }
 

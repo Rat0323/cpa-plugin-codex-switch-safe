@@ -42,11 +42,18 @@ func (p *switchSafePlugin) InterceptRequestAfterAuth(_ context.Context, req plug
 	if decision.Reject {
 		return compactionTermination(), nil
 	}
-	if !decision.Strip {
+	if !decision.Strip && len(decision.BlockedItemFingerprints) == 0 {
 		return pluginapi.RequestInterceptResponse{}, nil
 	}
 
-	updated, changed, errStrip := inspection.stripRouteBoundState()
+	var updated []byte
+	var changed bool
+	var errStrip error
+	if decision.Strip {
+		updated, changed, errStrip = inspection.stripRouteBoundState()
+	} else {
+		updated, changed, errStrip = inspection.stripRetiredRouteBoundItems(decision.BlockedItemFingerprints)
+	}
 	if errStrip != nil || !changed {
 		p.state.discardPending(req.RequestID)
 		return stateResetTermination(http.StatusConflict, "Codex route-bound state could not be reset safely; start a fresh turn."), nil
