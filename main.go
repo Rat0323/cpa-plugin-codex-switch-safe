@@ -28,25 +28,25 @@ func pluginMetadata() pluginapi.Metadata {
 		GitHubRepository: "https://github.com/Rat0323/cpa-plugin-codex-switch-safe",
 		ConfigFields: []pluginapi.ConfigField{
 			{
+				Name:        "compaction_policy",
+				Type:        pluginapi.ConfigFieldTypeEnum,
+				EnumValues:  []string{string(compactionPolicyBlock), string(compactionPolicyStrip)},
+				Description: "Compaction handling on route changes. block (recommended) rejects unsafe switches; strip drops compaction state and continues.",
+			},
+			{
 				Name:        "state_ttl",
 				Type:        pluginapi.ConfigFieldTypeString,
-				Description: "In-memory route-state lifetime, from 1m through 24h. Default: 4h.",
+				Description: "How long a conversation route binding stays in memory. Accepts 1m through 24h; default: 4h.",
 			},
 			{
 				Name:        "max_sessions",
 				Type:        pluginapi.ConfigFieldTypeInteger,
-				Description: "Maximum successful conversation route entries retained in memory. Default: 4096.",
+				Description: "Maximum conversation route entries retained in memory. Usually keep the default: 4096.",
 			},
 			{
 				Name:        "max_pending",
 				Type:        pluginapi.ConfigFieldTypeInteger,
-				Description: "Maximum selected-auth attempts retained while requests are in flight. Default: 8192.",
-			},
-			{
-				Name:        "compaction_policy",
-				Type:        pluginapi.ConfigFieldTypeEnum,
-				EnumValues:  []string{string(compactionPolicyBlock), string(compactionPolicyStrip)},
-				Description: "block preserves long-context correctness on route changes; strip continues after dropping route-bound compaction state.",
+				Description: "Maximum in-flight selected-auth attempts tracked. Usually keep the default: 8192.",
 			},
 		},
 	}
