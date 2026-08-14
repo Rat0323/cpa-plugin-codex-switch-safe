@@ -68,14 +68,21 @@ plugins:
   configs:
     codex-switch-safe:
       enabled: true
+      compaction_policy: block
       state_ttl: 4h
       max_sessions: 4096
       max_pending: 8192
-      compaction_policy: block
 ```
 
-`state_ttl` accepts `1m` through `24h`. `compaction_policy` is `block` or
-`strip`; `block` is the recommended default.
+`compaction_policy` is `block` or `strip`; `block` is the recommended default.
+`block` rejects a route change when the request carries foreign compaction
+state, while `strip` drops that state and continues. `state_ttl` accepts `1m`
+through `24h`. `max_sessions` and `max_pending` are bounded-memory tuning
+controls and should normally remain at their defaults.
+
+The CPA plugin priority controls interceptor order. When other request
+interceptor plugins rewrite Codex request bodies, give this plugin a lower
+priority so it runs after those rewrites and performs the final safety check.
 
 The plugin has no network access, does not write files, and never stores raw
 request bodies, tokens, authorization headers, or encrypted content. It uses a
