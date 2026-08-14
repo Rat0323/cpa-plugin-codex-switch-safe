@@ -96,16 +96,66 @@ func TestSessionKeyWithoutStableIdentityIsEmpty(t *testing.T) {
 	}
 }
 
-func TestSessionKeyDoesNotTreatPromptCacheOrWindowAsConversation(t *testing.T) {
-	req := pluginapi.RequestInterceptRequest{
-		Body: []byte(`{"prompt_cache_key":"cache-a","window_id":"window-a","input":[{"type":"reasoning","encrypted_content":"opaque"}]}`),
+func TestSessionKeyUsesPromptCacheKeyFallback(t *testing.T) {
+	first := pluginapi.RequestInterceptRequest{Body: []byte(`{"prompt_cache_key":"cache-a","window_id":"window-a"}`)}
+	second := pluginapi.RequestInterceptRequest{Body: []byte(`{"prompt_cache_key":"cache-a","window_id":"window-b"}`)}
+	third := pluginapi.RequestInterceptRequest{Body: []byte(`{"prompt_cache_key":"cache-b","window_id":"window-a"}`)}
+	firstInspection, _ := inspectPayload(first.Body)
+	secondInspection, _ := inspectPayload(second.Body)
+	thirdInspection, _ := inspectPayload(third.Body)
+	firstKey := sessionKeyFromRequest(first, firstInspection)
+	secondKey := sessionKeyFromRequest(second, secondInspection)
+	thirdKey := sessionKeyFromRequest(third, thirdInspection)
+	if firstKey == "" || firstKey != secondKey || firstKey == thirdKey {
+		t.Fatalf("prompt cache keys = %q, %q, %q", firstKey, secondKey, thirdKey)
 	}
+}
+
+func TestSessionKeyUsesDirectClientMetadataConversation(t *testing.T) {
+	first := pluginapi.RequestInterceptRequest{Body: []byte(`{"client_metadata":{"session_id":"session-a","thread_id":"thread-a"}}`)}
+	second := pluginapi.RequestInterceptRequest{Body: []byte(`{"client_metadata":{"session_id":"session-a","thread_id":"thread-a","turn_id":"turn-2"}}`)}
+	other := pluginapi.RequestInterceptRequest{Body: []byte(`{"client_metadata":{"session_id":"session-a","thread_id":"thread-b"}}`)}
+	firstInspection, _ := inspectPayload(first.Body)
+	secondInspection, _ := inspectPayload(second.Body)
+	otherInspection, _ := inspectPayload(other.Body)
+	firstKey := sessionKeyFromRequest(first, firstInspection)
+	secondKey := sessionKeyFromRequest(second, secondInspection)
+	otherKey := sessionKeyFromRequest(other, otherInspection)
+	if firstKey == "" || firstKey != secondKey || firstKey == otherKey {
+		t.Fatalf("client metadata keys = %q, %q, %q", firstKey, secondKey, otherKey)
+	}
+}
+
+func TestSessionKeyPrefersHeadersOverWeakerPayloadFallbacks(t *testing.T) {
+	withConflict := pluginapi.RequestInterceptRequest{
+		Headers: http.Header{"Session-Id": []string{"header-session"}},
+		Body:    []byte(`{"client_metadata":{"session_id":"body-session","thread_id":"body-thread"},"prompt_cache_key":"body-cache"}`),
+	}
+	headerOnly := pluginapi.RequestInterceptRequest{
+		Headers: http.Header{"Session-Id": []string{"header-session"}},
+		Body:    []byte(`{}`),
+	}
+	conflictInspection, _ := inspectPayload(withConflict.Body)
+	headerInspection, _ := inspectPayload(headerOnly.Body)
+	conflictKey := sessionKeyFromRequest(withConflict, conflictInspection)
+	headerKey := sessionKeyFromRequest(headerOnly, headerInspection)
+	if conflictKey == "" || conflictKey != headerKey {
+		t.Fatalf("conflicting session keys = %q, %q", conflictKey, headerKey)
+	}
+}
+
+func TestSessionKeyPrefersNestedCodexMetadataOverDirectClientMetadata(t *testing.T) {
+	req := pluginapi.RequestInterceptRequest{Body: []byte(`{"client_metadata":{"session_id":"shared-session","thread_id":"shared-thread","x-codex-turn-metadata":"{\"session_id\":\"nested-session\",\"thread_id\":\"nested-thread\"}"}}`)}
 	inspection, errInspect := inspectPayload(req.Body)
 	if errInspect != nil {
 		t.Fatal(errInspect)
 	}
-	if key := sessionKeyFromRequest(req, inspection); key != "" {
-		t.Fatalf("session key = %q, want empty", key)
+	key := sessionKeyFromRequest(req, inspection)
+	wantReq := pluginapi.RequestInterceptRequest{Body: []byte(`{"x-codex-turn-metadata":"{\"session_id\":\"nested-session\",\"thread_id\":\"nested-thread\"}"}`)}
+	wantInspection, _ := inspectPayload(wantReq.Body)
+	want := sessionKeyFromRequest(wantReq, wantInspection)
+	if key == "" || key != want {
+		t.Fatalf("nested metadata key = %q, want %q", key, want)
 	}
 }
 

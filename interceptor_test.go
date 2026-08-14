@@ -61,6 +61,36 @@ func TestInterceptorBlocksUnsafeCompactionByDefault(t *testing.T) {
 	}
 }
 
+func TestInterceptorRemovesRetiredReasoningOnLaterSameRouteRequest(t *testing.T) {
+	p, errBuild := buildPlugin([]byte("enabled: true\n"))
+	if errBuild != nil {
+		t.Fatal(errBuild)
+	}
+	seed := codexRequest("seed-a", "session-a", "thread-a", "auth-a", "gpt-5.6", `{"input":[{"type":"message","role":"user","content":"start"}]}`)
+	p.InterceptRequestAfterAuth(nil, seed)
+	p.HandleRequestComplete(nil, pluginapi.RequestCompletion{RequestID: "seed-a", Outcome: pluginapi.RequestCompletionSucceeded})
+
+	switchRequest := codexRequest("switch-b", "session-a", "thread-a", "auth-b", "gpt-5.6", `{"previous_response_id":"resp-a","input":[{"type":"reasoning","id":"rs-from-a","encrypted_content":"foreign"},{"type":"message","role":"user","content":"switch"}]}`)
+	switchResponse, errSwitch := p.InterceptRequestAfterAuth(nil, switchRequest)
+	if errSwitch != nil || switchResponse.Terminate || !strings.Contains(string(switchResponse.Body), "switch") || strings.Contains(string(switchResponse.Body), "rs-from-a") {
+		t.Fatalf("switch response = %#v, err=%v", switchResponse, errSwitch)
+	}
+	p.HandleRequestComplete(nil, pluginapi.RequestCompletion{RequestID: "switch-b", Outcome: pluginapi.RequestCompletionSucceeded})
+
+	replay := codexRequest("same-b", "session-a", "thread-a", "auth-b", "gpt-5.6", `{"previous_response_id":"resp-b","input":[{"type":"reasoning","id":"rs-from-a","encrypted_content":"foreign"},{"type":"reasoning","id":"rs-from-b","encrypted_content":"current"},{"type":"message","role":"user","content":"continue"}]}`)
+	replayResponse, errReplay := p.InterceptRequestAfterAuth(nil, replay)
+	if errReplay != nil || replayResponse.Terminate || len(replayResponse.Body) == 0 {
+		t.Fatalf("replay response = %#v, err=%v", replayResponse, errReplay)
+	}
+	body := string(replayResponse.Body)
+	if strings.Contains(body, "rs-from-a") {
+		t.Fatalf("retired A reasoning survived: %s", body)
+	}
+	if !strings.Contains(body, "rs-from-b") || !strings.Contains(body, `"previous_response_id":"resp-b"`) {
+		t.Fatalf("current B state was removed: %s", body)
+	}
+}
+
 func TestInterceptorFailClosedWithoutSelectedAuthOrSession(t *testing.T) {
 	p, errBuild := buildPlugin(nil)
 	if errBuild != nil {

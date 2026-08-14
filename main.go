@@ -5,7 +5,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-var pluginVersion = "0.1.0"
+var pluginVersion = "0.1.1"
 
 const pluginSchemaVersion = pluginabi.SchemaVersion
 

@@ -11,6 +11,7 @@ type stateSignals struct {
 	HasReasoning          bool
 	HasCompaction         bool
 	HasPreviousResponseID bool
+	ItemFingerprints      []string
 }
 
 func (s stateSignals) hasRouteBoundState() bool {
@@ -49,20 +50,51 @@ func inspectPayload(raw []byte) (payloadInspection, error) {
 	}
 	inspection.InputArray = true
 	for _, item := range inspection.InputItems {
-		var kind struct {
-			Type string `json:"type"`
-		}
-		if errUnmarshal := json.Unmarshal(item, &kind); errUnmarshal != nil {
+		kind, fingerprint, ok := routeBoundInputItem(item)
+		if !ok {
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(kind.Type)) {
+		switch kind {
 		case "reasoning":
 			inspection.Signals.HasReasoning = true
 		case "compaction":
 			inspection.Signals.HasCompaction = true
 		}
+		inspection.Signals.ItemFingerprints = append(inspection.Signals.ItemFingerprints, fingerprint)
 	}
 	return inspection, nil
+}
+
+func routeBoundInputItem(raw json.RawMessage) (string, string, bool) {
+	var item struct {
+		Type             string          `json:"type"`
+		ID               string          `json:"id"`
+		EncryptedContent json.RawMessage `json:"encrypted_content"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &item); errUnmarshal != nil {
+		return "", "", false
+	}
+	kind := strings.ToLower(strings.TrimSpace(item.Type))
+	if kind != "reasoning" && kind != "compaction" {
+		return "", "", false
+	}
+	if id := strings.TrimSpace(item.ID); id != "" {
+		return kind, opaqueDigest("route-bound-item-v1", kind, "id", id), true
+	}
+	var encryptedContent string
+	if errUnmarshal := json.Unmarshal(item.EncryptedContent, &encryptedContent); errUnmarshal == nil && encryptedContent != "" {
+		return kind, opaqueDigest("route-bound-item-v1", kind, "encrypted-content", encryptedContent), true
+	}
+
+	// encoding/json emits deterministic object-key ordering, so this fallback
+	// remains stable if the client reserializes an otherwise identical item.
+	var canonical any
+	if errUnmarshal := json.Unmarshal(raw, &canonical); errUnmarshal == nil {
+		if encoded, errMarshal := json.Marshal(canonical); errMarshal == nil {
+			raw = encoded
+		}
+	}
+	return kind, opaqueDigest("route-bound-item-v1", kind, "canonical-item", string(raw)), true
 }
 
 // stripRouteBoundState deliberately changes only top-level Responses input
@@ -109,6 +141,50 @@ func (p payloadInspection) stripRouteBoundState() ([]byte, bool, error) {
 	updated, errMarshal := json.Marshal(p.Root)
 	if errMarshal != nil {
 		return nil, false, fmt.Errorf("encode sanitized request: %w", errMarshal)
+	}
+	return updated, true, nil
+}
+
+// stripRetiredRouteBoundItems removes only top-level items already observed on
+// a foreign or unknown route. previous_response_id remains intact because it
+// belongs to the currently selected route on same-route continuations.
+func (p payloadInspection) stripRetiredRouteBoundItems(fingerprints []string) ([]byte, bool, error) {
+	if !p.InputArray || len(fingerprints) == 0 {
+		return p.Raw, false, nil
+	}
+	blocked := make(map[string]struct{}, len(fingerprints))
+	for _, fingerprint := range fingerprints {
+		if fingerprint != "" {
+			blocked[fingerprint] = struct{}{}
+		}
+	}
+	if len(blocked) == 0 {
+		return p.Raw, false, nil
+	}
+
+	filtered := make([]json.RawMessage, 0, len(p.InputItems))
+	changed := false
+	for _, item := range p.InputItems {
+		_, fingerprint, ok := routeBoundInputItem(item)
+		if ok {
+			if _, remove := blocked[fingerprint]; remove {
+				changed = true
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	if !changed {
+		return p.Raw, false, nil
+	}
+	rawInput, errMarshal := json.Marshal(filtered)
+	if errMarshal != nil {
+		return nil, false, fmt.Errorf("encode selectively filtered input: %w", errMarshal)
+	}
+	p.Root["input"] = rawInput
+	updated, errMarshal := json.Marshal(p.Root)
+	if errMarshal != nil {
+		return nil, false, fmt.Errorf("encode selectively sanitized request: %w", errMarshal)
 	}
 	return updated, true, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -68,6 +69,30 @@ func TestRouteStateUsesLastSelectedAttemptForRetry(t *testing.T) {
 	decision := store.prepare("next", session, routeB, true, stateSignals{HasReasoning: true})
 	if decision.Relation != routeRelationSame || decision.Strip || decision.Reject {
 		t.Fatalf("retry commit decision = %#v", decision)
+	}
+}
+
+func TestRouteStateDoesNotRetireItemsFromFailedCandidate(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	routeA := routeFingerprint{Digest: "route-a"}
+	routeB := routeFingerprint{Digest: "route-b"}
+	seedCommittedRoute(store, "session-a", routeA)
+
+	failedB := store.prepare("retry", "session-a", routeB, true, stateSignals{
+		HasReasoning:     true,
+		ItemFingerprints: []string{"item-from-a"},
+	})
+	if !failedB.Strip {
+		t.Fatalf("failed B decision = %#v", failedB)
+	}
+	store.complete(pluginapi.RequestCompletion{RequestID: "retry", Outcome: pluginapi.RequestCompletionFailed, Error: "upstream unavailable"})
+
+	retryA := store.prepare("retry-a", "session-a", routeA, true, stateSignals{
+		HasReasoning:     true,
+		ItemFingerprints: []string{"item-from-a"},
+	})
+	if retryA.Relation != routeRelationSame || retryA.Strip || retryA.Reject || len(retryA.BlockedItemFingerprints) != 0 {
+		t.Fatalf("retry A decision = %#v", retryA)
 	}
 }
 
@@ -164,6 +189,41 @@ func TestRouteStateCompactionPolicies(t *testing.T) {
 	}
 }
 
+func TestRouteStateRetiresRejectedForeignCompaction(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	routeA := routeFingerprint{Digest: "route-a"}
+	routeB := routeFingerprint{Digest: "route-b"}
+	seedCommittedRoute(store, "session-a", routeA)
+	foreign := stateSignals{HasCompaction: true, ItemFingerprints: []string{"compaction-from-a"}}
+	rejected := store.prepare("reject", "session-a", routeB, true, foreign)
+	if !rejected.Reject || rejected.Strip {
+		t.Fatalf("rejected compaction decision = %#v", rejected)
+	}
+
+	store.prepare("clean-b", "session-a", routeB, true, stateSignals{})
+	store.complete(pluginapi.RequestCompletion{RequestID: "clean-b", Outcome: pluginapi.RequestCompletionSucceeded})
+	replay := store.prepare("replay", "session-a", routeB, true, foreign)
+	if replay.Relation != routeRelationSame || replay.Strip || replay.Reject || len(replay.BlockedItemFingerprints) != 1 {
+		t.Fatalf("replayed compaction decision = %#v", replay)
+	}
+}
+
+func TestRouteStateRetiresRejectedCompactionWithoutPriorRoute(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	route := routeFingerprint{Digest: "route-b"}
+	foreign := stateSignals{HasCompaction: true, ItemFingerprints: []string{"unknown-compaction"}}
+	rejected := store.prepare("reject", "session-a", route, true, foreign)
+	if !rejected.Reject || rejected.Relation != routeRelationUnknown {
+		t.Fatalf("rejected compaction decision = %#v", rejected)
+	}
+	store.prepare("clean", "session-a", route, true, stateSignals{})
+	store.complete(pluginapi.RequestCompletion{RequestID: "clean", Outcome: pluginapi.RequestCompletionSucceeded})
+	replay := store.prepare("replay", "session-a", route, true, foreign)
+	if replay.Relation != routeRelationSame || len(replay.BlockedItemFingerprints) != 1 {
+		t.Fatalf("replayed compaction decision = %#v", replay)
+	}
+}
+
 func TestRouteStateExpiresAndBoundsEntries(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig()
@@ -203,6 +263,108 @@ func TestInvalidEncryptedContentInvalidatesMatchingCommittedRoute(t *testing.T) 
 	decision := store.prepare("next", "session-a", route, true, stateSignals{HasReasoning: true})
 	if decision.Relation != routeRelationUnknown || !decision.Strip {
 		t.Fatalf("invalidated route decision = %#v", decision)
+	}
+}
+
+func TestRouteStateBlocksRetiredItemsAfterRouteChangeSucceeds(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	routeA := routeFingerprint{Digest: "route-a"}
+	routeB := routeFingerprint{Digest: "route-b"}
+	seedCommittedRoute(store, "session-a", routeA)
+
+	changed := store.prepare("switch", "session-a", routeB, true, stateSignals{
+		HasReasoning:     true,
+		ItemFingerprints: []string{"item-from-a"},
+	})
+	if !changed.Strip || len(changed.BlockedItemFingerprints) != 0 {
+		t.Fatalf("changed route decision = %#v", changed)
+	}
+	store.complete(pluginapi.RequestCompletion{RequestID: "switch", Outcome: pluginapi.RequestCompletionSucceeded})
+
+	replay := store.prepare("same-b", "session-a", routeB, true, stateSignals{
+		HasReasoning:     true,
+		ItemFingerprints: []string{"item-from-a", "item-from-b"},
+	})
+	if replay.Relation != routeRelationSame || replay.Strip || replay.Reject {
+		t.Fatalf("same route replay decision = %#v", replay)
+	}
+	if len(replay.BlockedItemFingerprints) != 1 || replay.BlockedItemFingerprints[0] != "item-from-a" {
+		t.Fatalf("blocked fingerprints = %#v", replay.BlockedItemFingerprints)
+	}
+}
+
+func TestRouteStateRetiresItemsWithoutPriorCommittedSession(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	route := routeFingerprint{Digest: "route-b"}
+	first := store.prepare("first", "session-a", route, true, stateSignals{
+		HasReasoning:     true,
+		ItemFingerprints: []string{"foreign-item"},
+	})
+	if !first.Strip || first.Relation != routeRelationUnknown {
+		t.Fatalf("first decision = %#v", first)
+	}
+	store.complete(pluginapi.RequestCompletion{RequestID: "first", Outcome: pluginapi.RequestCompletionSucceeded})
+	replay := store.prepare("replay", "session-a", route, true, stateSignals{
+		HasReasoning:     true,
+		ItemFingerprints: []string{"foreign-item", "current-item"},
+	})
+	if replay.Relation != routeRelationSame || replay.Strip || len(replay.BlockedItemFingerprints) != 1 || replay.BlockedItemFingerprints[0] != "foreign-item" {
+		t.Fatalf("replay decision = %#v", replay)
+	}
+}
+
+func TestRouteStateCompletionRestoresRetiredItemsAfterSessionEviction(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	routeA := routeFingerprint{Digest: "route-a"}
+	routeB := routeFingerprint{Digest: "route-b"}
+	seedCommittedRoute(store, "session-a", routeA)
+	store.prepare("switch", "session-a", routeB, true, stateSignals{
+		HasReasoning:     true,
+		ItemFingerprints: []string{"item-from-a"},
+	})
+	store.mu.Lock()
+	delete(store.sessions, "session-a")
+	store.mu.Unlock()
+	store.complete(pluginapi.RequestCompletion{RequestID: "switch", Outcome: pluginapi.RequestCompletionSucceeded})
+
+	state, exists := store.sessions["session-a"]
+	if !exists || !state.HasRoute || !state.Route.equal(routeB) {
+		t.Fatalf("restored session = %#v, exists=%v", state, exists)
+	}
+	if _, exists := state.RetiredItems["item-from-a"]; !exists {
+		t.Fatalf("retired items were not restored: %#v", state.RetiredItems)
+	}
+}
+
+func TestRouteStateBoundsRetiredItemFingerprints(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	seedCommittedRoute(store, "session-a", routeFingerprint{Digest: "route-a"})
+	fingerprints := make([]string, maxRetiredItemFingerprintsPerSession+1)
+	for index := range fingerprints {
+		fingerprints[index] = fmt.Sprintf("item-%03d", index)
+	}
+	store.prepare("switch", "session-a", routeFingerprint{Digest: "route-b"}, true, stateSignals{
+		HasReasoning:     true,
+		ItemFingerprints: fingerprints,
+	})
+	store.complete(pluginapi.RequestCompletion{RequestID: "switch", Outcome: pluginapi.RequestCompletionSucceeded})
+	retired := store.sessions["session-a"].RetiredItems
+	if len(retired) != maxRetiredItemFingerprintsPerSession {
+		t.Fatalf("retired length = %d, want %d", len(retired), maxRetiredItemFingerprintsPerSession)
+	}
+	if _, exists := retired[fingerprints[0]]; exists {
+		t.Fatal("oldest retired fingerprint was not evicted")
+	}
+	if _, exists := retired[fingerprints[len(fingerprints)-1]]; !exists {
+		t.Fatal("newest retired fingerprint was evicted")
+	}
+	if !store.sessions["session-a"].RetiredOverflow {
+		t.Fatal("retired overflow marker = false, want true")
+	}
+
+	conservative := store.prepare("after-overflow", "session-a", routeFingerprint{Digest: "route-b"}, true, stateSignals{HasReasoning: true, ItemFingerprints: []string{"old-item"}})
+	if !conservative.Strip || len(conservative.BlockedItemFingerprints) != 0 {
+		t.Fatalf("overflow replay decision = %#v", conservative)
 	}
 }
 

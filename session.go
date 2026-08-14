@@ -26,11 +26,14 @@ func requestSessionIdentity(req pluginapi.RequestInterceptRequest, inspection pa
 	if value := normalizeOpaqueIdentifier(metadataString(req.Metadata, "execution_session_id")); value != "" {
 		return "execution", value
 	}
+	if kind, value := headerSessionIdentity(req.Headers); value != "" {
+		return kind, value
+	}
 	if kind, value := payloadSessionIdentity(inspection.Root); value != "" {
 		return kind, value
 	}
-	if kind, value := headerSessionIdentity(req.Headers); value != "" {
-		return kind, value
+	if value := normalizedRawJSONString(inspection.Root["prompt_cache_key"]); value != "" {
+		return "payload-prompt-cache-key", value
 	}
 	if value := normalizeOpaqueIdentifier(metadataString(req.Metadata, "derived_session_id")); value != "" {
 		return "derived", value
@@ -64,6 +67,17 @@ func payloadSessionIdentity(root map[string]json.RawMessage) (string, string) {
 			if metadata := normalizedRawJSONString(clientMetadata["x-codex-turn-metadata"]); metadata != "" {
 				if kind, value := codexTurnMetadataIdentity(metadata); value != "" {
 					return kind, value
+				}
+			}
+			if value := codexConversationIdentity(
+				normalizedRawJSONString(clientMetadata["session_id"]),
+				normalizedRawJSONString(clientMetadata["thread_id"]),
+			); value != "" {
+				return "client-metadata-codex-session", value
+			}
+			for _, field := range []string{"session_id", "sessionId", "conversation_id", "conversationId", "thread_id", "threadId"} {
+				if value := normalizedRawJSONString(clientMetadata[field]); value != "" {
+					return "client-metadata-" + strings.ToLower(field), value
 				}
 			}
 		}
