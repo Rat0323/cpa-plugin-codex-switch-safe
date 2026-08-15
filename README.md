@@ -32,8 +32,9 @@ re-establish reasoning for that turn.
 - Route identity: CPA `selected_auth_id`, selected model, and `ToFormat: codex`.
 - Retry aware: a request ID keeps only its latest after-auth candidate; a route
   is committed only after lifecycle outcome `succeeded`. Route-bound item
-  fingerprints are also committed only for that successful candidate, so a
-  failed failover does not retire valid state from the original route.
+  fingerprints are committed for successful candidates; a locally rejected
+  compaction candidate uses only a target-route-scoped barrier, so a failed
+  failover does not retire valid state from the original route.
 - Failover aware: failed, rejected, canceled, and expired attempts do not
   advance the committed route.
 - Subagent aware: independent execution sessions are isolated. Same-session
@@ -75,6 +76,7 @@ plugins:
       state_ttl: 4h
       max_sessions: 4096
       max_pending: 8192
+      diagnostics: actions
 ```
 
 `compaction_policy` is `block` or `strip`; `block` is the recommended default.
@@ -83,13 +85,31 @@ state, while `strip` drops that state and continues. `state_ttl` accepts `1m`
 through `24h`. `max_sessions` and `max_pending` are bounded-memory tuning
 controls and should normally remain at their defaults.
 
+`diagnostics` controls privacy-safe structured records written through CPA's
+existing logging system:
+
+- `actions` (default) records only protection actions such as route-state
+  stripping, compaction blocking, and their final lifecycle outcomes.
+- `debug` also records safe pass-through decisions for troubleshooting.
+- `off` disables plugin diagnostics.
+
+Diagnostics include the CPA request ID, action, outcome, removal counts, and
+short process-local HMAC references for route/session correlation. They never
+include API keys, raw selected-auth IDs, raw session/thread/conversation IDs,
+request bodies, encrypted content, reasoning text, or user conversation text.
+CPA's standard text formatter intentionally renders only a fixed subset of
+structured fields, so the action, outcome, and removal counts are also emitted
+as stable `key=value` pairs in the diagnostic message. The same fields remain
+attached to the host log record for integrations that consume structured logs.
+
 The CPA plugin priority controls interceptor order. When other request
 interceptor plugins rewrite Codex request bodies, give this plugin a lower
 priority so it runs after those rewrites and performs the final safety check.
 
 The plugin has no network access, does not write files, and never stores raw
 request bodies, tokens, authorization headers, or encrypted content. It uses a
-random process-local HMAC key to compare opaque top-level item fingerprints.
+random process-local HMAC key to compare opaque top-level item fingerprints and
+to produce non-persistent diagnostic references.
 
 ## Development
 

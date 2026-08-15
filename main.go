@@ -5,7 +5,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-var pluginVersion = "0.1.1"
+var pluginVersion = "0.2.0"
 
 const pluginSchemaVersion = pluginabi.SchemaVersion
 
@@ -15,8 +15,9 @@ func buildPlugin(configYAML []byte) (*switchSafePlugin, error) {
 		return nil, errParse
 	}
 	return &switchSafePlugin{
-		cfg:   cfg,
-		state: newRouteStateStore(cfg),
+		cfg:         cfg,
+		state:       newRouteStateStore(cfg),
+		diagnostics: newDiagnosticReporter(cfg.Diagnostics, cfg.MaxPending, hostDiagnosticSink),
 	}, nil
 }
 
@@ -47,6 +48,12 @@ func pluginMetadata() pluginapi.Metadata {
 				Name:        "max_pending",
 				Type:        pluginapi.ConfigFieldTypeInteger,
 				Description: "Maximum in-flight selected-auth attempts tracked. Usually keep the default: 8192.",
+			},
+			{
+				Name:        "diagnostics",
+				Type:        pluginapi.ConfigFieldTypeEnum,
+				EnumValues:  []string{string(diagnosticsOff), string(diagnosticsActions), string(diagnosticsDebug)},
+				Description: "Privacy-safe structured diagnostics. actions (default) logs protection actions and their outcomes; debug also logs safe pass-through decisions; off disables diagnostics.",
 			},
 		},
 	}

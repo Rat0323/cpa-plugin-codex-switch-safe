@@ -10,8 +10,9 @@ import (
 )
 
 type switchSafePlugin struct {
-	cfg   pluginConfig
-	state *routeStateStore
+	cfg         pluginConfig
+	state       *routeStateStore
+	diagnostics *diagnosticReporter
 }
 
 var _ pluginapi.RequestInterceptor = (*switchSafePlugin)(nil)
@@ -27,37 +28,57 @@ func (p *switchSafePlugin) InterceptRequestAfterAuth(_ context.Context, req plug
 	if p == nil || !p.cfg.Enabled || !isCodexTarget(req) {
 		return pluginapi.RequestInterceptResponse{}, nil
 	}
+	p.diagnostics.beginRequest(req.RequestID)
 
 	inspection, errInspect := inspectPayload(req.Body)
 	if errInspect != nil {
 		if likelyContainsRouteBoundState(req.Body) {
+			p.diagnostics.action("warn", "reject_unparseable_state", req, map[string]any{
+				"reason": "payload_parse_failed",
+			})
 			return stateResetTermination(http.StatusBadRequest, "Codex route-bound state could not be parsed safely; start a fresh turn."), nil
 		}
+		p.diagnostics.debug("pass_unparseable_without_route_state", req, nil)
 		return pluginapi.RequestInterceptResponse{}, nil
 	}
 
 	sessionKey := sessionKeyFromRequest(req, inspection)
 	route, routeKnown := routeFingerprintFromRequest(req)
 	decision := p.state.prepare(req.RequestID, sessionKey, route, routeKnown, inspection.Signals)
+	decisionFields := diagnosticDecisionFields(sessionKey, route, routeKnown, decision, inspection.Signals)
 	if decision.Reject {
+		p.diagnostics.action("warn", "block_compaction", req, decisionFields)
 		return compactionTermination(), nil
 	}
 	if !decision.Strip && len(decision.BlockedItemFingerprints) == 0 {
+		action := "pass_clean"
+		if decision.Relation == routeRelationSame && inspection.Signals.hasRouteBoundState() {
+			action = "pass_same_route"
+		}
+		p.diagnostics.debug(action, req, decisionFields)
 		return pluginapi.RequestInterceptResponse{}, nil
 	}
 
 	var updated []byte
-	var changed bool
+	var stats sanitizeStats
 	var errStrip error
+	action := "strip_route_state"
 	if decision.Strip {
-		updated, changed, errStrip = inspection.stripRouteBoundState()
+		updated, stats, errStrip = inspection.stripRouteBoundStateWithStats()
 	} else {
-		updated, changed, errStrip = inspection.stripRetiredRouteBoundItems(decision.BlockedItemFingerprints)
+		action = "strip_retired_items"
+		updated, stats, errStrip = inspection.stripRetiredRouteBoundItemsWithStats(decision.BlockedItemFingerprints)
 	}
-	if errStrip != nil || !changed {
+	if errStrip != nil || !stats.changed() {
 		p.state.discardPending(req.RequestID)
+		decisionFields["reason"] = "sanitize_failed"
+		p.diagnostics.action("error", "reject_sanitize_failure", req, decisionFields)
 		return stateResetTermination(http.StatusConflict, "Codex route-bound state could not be reset safely; start a fresh turn."), nil
 	}
+	decisionFields["reasoning_removed"] = stats.ReasoningRemoved
+	decisionFields["compaction_removed"] = stats.CompactionRemoved
+	decisionFields["previous_response_id_removed"] = stats.PreviousResponseIDRemoved
+	p.diagnostics.action("info", action, req, decisionFields)
 	return pluginapi.RequestInterceptResponse{Body: updated}, nil
 }
 
@@ -66,7 +87,25 @@ func (p *switchSafePlugin) HandleRequestComplete(_ context.Context, completion p
 		return nil
 	}
 	p.state.complete(completion)
+	p.diagnostics.complete(completion)
 	return nil
+}
+
+func diagnosticDecisionFields(sessionKey string, route routeFingerprint, routeKnown bool, decision routeDecision, signals stateSignals) map[string]any {
+	fields := map[string]any{
+		"route_known":              routeKnown,
+		"route_relation":           relationName(decision.Relation),
+		"has_reasoning":            signals.HasReasoning,
+		"has_compaction":           signals.HasCompaction,
+		"has_previous_response_id": signals.HasPreviousResponseID,
+	}
+	if ref := diagnosticRef(sessionKey); ref != "" {
+		fields["session_ref"] = ref
+	}
+	if ref := diagnosticRef(route.Digest); ref != "" {
+		fields["route_ref"] = ref
+	}
+	return fields
 }
 
 func isCodexTarget(req pluginapi.RequestInterceptRequest) bool {

@@ -78,6 +78,21 @@ func TestStripRouteBoundStateOnlyTouchesTopLevelState(t *testing.T) {
 	}
 }
 
+func TestStripRouteBoundStateReportsExactStats(t *testing.T) {
+	payload := []byte(`{"previous_response_id":"resp","input":[{"type":"reasoning","encrypted_content":"one"},{"type":"reasoning","encrypted_content":"two"},{"type":"compaction","encrypted_content":"three"},{"type":"message","content":"keep"}]}`)
+	inspection, errInspect := inspectPayload(payload)
+	if errInspect != nil {
+		t.Fatal(errInspect)
+	}
+	_, stats, errStrip := inspection.stripRouteBoundStateWithStats()
+	if errStrip != nil {
+		t.Fatal(errStrip)
+	}
+	if stats.ReasoningRemoved != 2 || stats.CompactionRemoved != 1 || !stats.PreviousResponseIDRemoved {
+		t.Fatalf("stats = %#v", stats)
+	}
+}
+
 func TestStripRouteBoundStateKeepsCleanPayloadByteForByte(t *testing.T) {
 	payload := []byte(`{"model":"gpt-5.6-terra","input":[{"type":"message","role":"user","content":"hello"}]}`)
 	inspection, errInspect := inspectPayload(payload)

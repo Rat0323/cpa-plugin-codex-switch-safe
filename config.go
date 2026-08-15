@@ -15,15 +15,22 @@ const (
 	defaultStateTTL    = 4 * time.Hour
 	defaultMaxSessions = 4096
 	defaultMaxPending  = 8192
+	defaultDiagnostics = diagnosticsActions
 	maxStateTTL        = 24 * time.Hour
 	maxTrackedEntries  = 65536
 )
 
 type compactionPolicy string
 
+type diagnosticsLevel string
+
 const (
 	compactionPolicyBlock compactionPolicy = "block"
 	compactionPolicyStrip compactionPolicy = "strip"
+
+	diagnosticsOff     diagnosticsLevel = "off"
+	diagnosticsActions diagnosticsLevel = "actions"
+	diagnosticsDebug   diagnosticsLevel = "debug"
 )
 
 type pluginConfig struct {
@@ -32,9 +39,11 @@ type pluginConfig struct {
 	MaxSessions         int    `yaml:"max_sessions"`
 	MaxPending          int    `yaml:"max_pending"`
 	CompactionPolicyRaw string `yaml:"compaction_policy"`
+	DiagnosticsRaw      string `yaml:"diagnostics"`
 
 	StateTTL         time.Duration    `yaml:"-"`
 	CompactionPolicy compactionPolicy `yaml:"-"`
+	Diagnostics      diagnosticsLevel `yaml:"-"`
 }
 
 func defaultPluginConfig() pluginConfig {
@@ -44,6 +53,7 @@ func defaultPluginConfig() pluginConfig {
 		MaxSessions:      defaultMaxSessions,
 		MaxPending:       defaultMaxPending,
 		CompactionPolicy: compactionPolicyBlock,
+		Diagnostics:      defaultDiagnostics,
 	}
 }
 
@@ -88,6 +98,17 @@ func parsePluginConfig(raw []byte) (pluginConfig, error) {
 		cfg.CompactionPolicy = compactionPolicy(policy)
 	default:
 		return cfg, fmt.Errorf("compaction_policy must be %q or %q", compactionPolicyBlock, compactionPolicyStrip)
+	}
+
+	diagnostics := strings.ToLower(strings.TrimSpace(cfg.DiagnosticsRaw))
+	if diagnostics == "" {
+		diagnostics = string(defaultDiagnostics)
+	}
+	switch diagnosticsLevel(diagnostics) {
+	case diagnosticsOff, diagnosticsActions, diagnosticsDebug:
+		cfg.Diagnostics = diagnosticsLevel(diagnostics)
+	default:
+		return cfg, fmt.Errorf("diagnostics must be %q, %q, or %q", diagnosticsOff, diagnosticsActions, diagnosticsDebug)
 	}
 	return cfg, nil
 }

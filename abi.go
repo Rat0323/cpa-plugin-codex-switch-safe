@@ -32,6 +32,19 @@ typedef struct {
 	cliproxy_plugin_shutdown_fn shutdown;
 } cliproxy_plugin_api;
 
+static int CodexSwitchSafeHostCall(cliproxy_host_api* host, const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
+	if (host == NULL || host->call == NULL) {
+		return 1;
+	}
+	return host->call(host->host_ctx, method, request, request_len, response);
+}
+
+static void CodexSwitchSafeHostFree(cliproxy_host_api* host, void* ptr, size_t len) {
+	if (host != NULL && host->free_buffer != NULL && ptr != NULL) {
+		host->free_buffer(ptr, len);
+	}
+}
+
 extern int CodexSwitchSafePluginCall(char*, uint8_t*, size_t, cliproxy_buffer*);
 extern void CodexSwitchSafePluginFree(void*, size_t);
 extern void CodexSwitchSafePluginShutdown(void);
@@ -58,6 +71,11 @@ var switchSafeABIState = struct {
 	inFlight     sync.WaitGroup
 }{}
 
+var switchSafeHostState = struct {
+	sync.RWMutex
+	api *C.cliproxy_host_api
+}{}
+
 type abiEnvelope struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result,omitempty"`
@@ -75,10 +93,11 @@ type abiLifecycleRequest struct {
 }
 
 //export cliproxy_plugin_init
-func cliproxy_plugin_init(_ *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
+func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
 	if plugin == nil {
 		return 1
 	}
+	configureHostAPI(host)
 	switchSafeABIState.Lock()
 	switchSafeABIState.shuttingDown = false
 	switchSafeABIState.Unlock()
@@ -132,6 +151,64 @@ func CodexSwitchSafePluginShutdown() {
 	switchSafeABIState.plugin = nil
 	switchSafeABIState.Unlock()
 	switchSafeABIState.inFlight.Wait()
+	clearHostAPI()
+}
+
+func configureHostAPI(host *C.cliproxy_host_api) {
+	switchSafeHostState.Lock()
+	defer switchSafeHostState.Unlock()
+	if switchSafeHostState.api != nil {
+		C.free(unsafe.Pointer(switchSafeHostState.api))
+		switchSafeHostState.api = nil
+	}
+	if host == nil {
+		return
+	}
+	copyAPI := (*C.cliproxy_host_api)(C.malloc(C.size_t(unsafe.Sizeof(*host))))
+	if copyAPI == nil {
+		return
+	}
+	*copyAPI = *host
+	switchSafeHostState.api = copyAPI
+}
+
+func clearHostAPI() {
+	switchSafeHostState.Lock()
+	defer switchSafeHostState.Unlock()
+	if switchSafeHostState.api != nil {
+		C.free(unsafe.Pointer(switchSafeHostState.api))
+		switchSafeHostState.api = nil
+	}
+}
+
+func hostDiagnosticSink(level, message string, fields map[string]any) {
+	payload, errMarshal := json.Marshal(map[string]any{
+		"level":   level,
+		"message": message,
+		"fields":  fields,
+	})
+	if errMarshal != nil {
+		return
+	}
+
+	switchSafeHostState.RLock()
+	defer switchSafeHostState.RUnlock()
+	if switchSafeHostState.api == nil {
+		return
+	}
+	method := C.CString(pluginabi.MethodHostLog)
+	defer C.free(unsafe.Pointer(method))
+	request := C.CBytes(payload)
+	defer C.free(request)
+	var response C.cliproxy_buffer
+	_ = C.CodexSwitchSafeHostCall(
+		switchSafeHostState.api,
+		method,
+		(*C.uint8_t)(request),
+		C.size_t(len(payload)),
+		&response,
+	)
+	C.CodexSwitchSafeHostFree(switchSafeHostState.api, response.ptr, response.len)
 }
 
 func handleABIMethod(ctx context.Context, method string, request []byte) ([]byte, error) {

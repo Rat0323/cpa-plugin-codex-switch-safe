@@ -20,3 +20,4 @@ plugins:
       max_sessions: 128
       max_pending: 256
       compaction_policy: block
+      diagnostics: actions
