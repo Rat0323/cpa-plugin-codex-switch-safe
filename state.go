@@ -79,13 +79,14 @@ type routeDecision struct {
 const maxRetiredItemFingerprintsPerSession = 256
 
 type sessionRouteState struct {
-	Route           routeFingerprint
-	HasRoute        bool
-	Sequence        uint64
-	UpdatedAt       time.Time
-	Tainted         bool
-	RetiredItems    map[string]uint64
-	RetiredOverflow bool
+	Route            routeFingerprint
+	HasRoute         bool
+	Sequence         uint64
+	UpdatedAt        time.Time
+	Tainted          bool
+	RetiredItems     map[string]uint64
+	RetiredItemRoute map[string]routeFingerprint
+	RetiredOverflow  bool
 }
 
 type pendingRoute struct {
@@ -148,11 +149,6 @@ func (s *routeStateStore) prepare(requestID, sessionKey string, route routeFinge
 	canTrack := sessionKey != "" && routeKnown
 	if !canTrack {
 		decision = failClosedDecision(signals, s.cfg.CompactionPolicy)
-		if decision.Reject && sessionKey != "" {
-			session := s.retireItemsLocked(s.sessions[sessionKey], signals.ItemFingerprints, now)
-			s.sessions[sessionKey] = session
-			s.trimSessionsLocked()
-		}
 		if decision.Strip && sessionKey != "" && requestID != "" {
 			session := s.sessions[sessionKey]
 			session.UpdatedAt = now
@@ -188,7 +184,7 @@ func (s *routeStateStore) prepare(requestID, sessionKey string, route routeFinge
 			if session.RetiredOverflow && (signals.HasReasoning || signals.HasCompaction) {
 				decision.Strip = true
 			} else {
-				decision.BlockedItemFingerprints = retiredItemMatches(session.RetiredItems, signals.ItemFingerprints)
+				decision.BlockedItemFingerprints = retiredItemMatches(session.RetiredItems, session.RetiredItemRoute, signals.ItemFingerprints, route)
 			}
 		} else {
 			decision.Relation = routeRelationChanged
@@ -200,8 +196,11 @@ func (s *routeStateStore) prepare(requestID, sessionKey string, route routeFinge
 	unsafeState := signals.hasRouteBoundState() && (session.Tainted || decision.Relation != routeRelationSame)
 	if unsafeState && signals.HasCompaction && s.cfg.CompactionPolicy == compactionPolicyBlock {
 		decision.Reject = true
-		if sessionKey != "" {
-			session = s.retireItemsLocked(session, signals.ItemFingerprints, now)
+		// A locally rejected candidate never commits a route transition. Keep a
+		// route-scoped barrier for a known target so a replay on that target is
+		// still removed, without poisoning the previously committed route.
+		if sessionKey != "" && routeKnown {
+			session = s.retireItemsLocked(session, signals.ItemFingerprints, route, true, now)
 			s.sessions[sessionKey] = session
 			s.trimSessionsLocked()
 		}
@@ -254,7 +253,7 @@ func failClosedDecision(signals stateSignals, policy compactionPolicy) routeDeci
 	return decision
 }
 
-func (s *routeStateStore) retireItemsLocked(session sessionRouteState, fingerprints []string, now time.Time) sessionRouteState {
+func (s *routeStateStore) retireItemsLocked(session sessionRouteState, fingerprints []string, route routeFingerprint, routeKnown bool, now time.Time) sessionRouteState {
 	if len(fingerprints) == 0 {
 		session.UpdatedAt = now
 		return session
@@ -262,12 +261,20 @@ func (s *routeStateStore) retireItemsLocked(session sessionRouteState, fingerpri
 	if session.RetiredItems == nil {
 		session.RetiredItems = make(map[string]uint64)
 	}
+	if session.RetiredItemRoute == nil {
+		session.RetiredItemRoute = make(map[string]routeFingerprint)
+	}
 	for _, fingerprint := range fingerprints {
 		if fingerprint == "" {
 			continue
 		}
 		s.sequence++
 		session.RetiredItems[fingerprint] = s.sequence
+		if routeKnown {
+			session.RetiredItemRoute[fingerprint] = route
+		} else {
+			delete(session.RetiredItemRoute, fingerprint)
+		}
 	}
 	for len(session.RetiredItems) > maxRetiredItemFingerprintsPerSession {
 		session.RetiredOverflow = true
@@ -280,6 +287,7 @@ func (s *routeStateStore) retireItemsLocked(session sessionRouteState, fingerpri
 			}
 		}
 		delete(session.RetiredItems, oldestFingerprint)
+		delete(session.RetiredItemRoute, oldestFingerprint)
 	}
 	session.UpdatedAt = now
 	return session
@@ -304,7 +312,7 @@ func uniqueFingerprints(fingerprints []string) []string {
 	return unique
 }
 
-func retiredItemMatches(retired map[string]uint64, observed []string) []string {
+func retiredItemMatches(retired map[string]uint64, retiredRoutes map[string]routeFingerprint, observed []string, route routeFingerprint) []string {
 	if len(retired) == 0 || len(observed) == 0 {
 		return nil
 	}
@@ -312,6 +320,9 @@ func retiredItemMatches(retired map[string]uint64, observed []string) []string {
 	seen := make(map[string]struct{}, len(observed))
 	for _, fingerprint := range observed {
 		if _, exists := retired[fingerprint]; !exists {
+			continue
+		}
+		if retiredRoute, routeScoped := retiredRoutes[fingerprint]; routeScoped && !retiredRoute.equal(route) {
 			continue
 		}
 		if _, duplicate := seen[fingerprint]; duplicate {
@@ -349,7 +360,7 @@ func (s *routeStateStore) complete(completion pluginapi.RequestCompletion) {
 
 	if completion.Outcome == pluginapi.RequestCompletionSucceeded {
 		if len(pending.RetiredItemFingerprints) > 0 {
-			current = s.retireItemsLocked(current, pending.RetiredItemFingerprints, now)
+			current = s.retireItemsLocked(current, pending.RetiredItemFingerprints, pending.Route, pending.RouteKnown, now)
 		}
 		applied := false
 		if !pending.RouteKnown {

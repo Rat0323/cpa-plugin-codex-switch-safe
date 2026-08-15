@@ -26,6 +26,16 @@ type payloadInspection struct {
 	Signals    stateSignals
 }
 
+type sanitizeStats struct {
+	ReasoningRemoved          int
+	CompactionRemoved         int
+	PreviousResponseIDRemoved bool
+}
+
+func (s sanitizeStats) changed() bool {
+	return s.ReasoningRemoved > 0 || s.CompactionRemoved > 0 || s.PreviousResponseIDRemoved
+}
+
 func inspectPayload(raw []byte) (payloadInspection, error) {
 	inspection := payloadInspection{Raw: raw}
 	if len(bytes.TrimSpace(raw)) == 0 {
@@ -101,13 +111,18 @@ func routeBoundInputItem(raw json.RawMessage) (string, string, bool) {
 // items. It never recursively searches for encrypted_content, because nested
 // agent messages and tool payloads are independent application data.
 func (p payloadInspection) stripRouteBoundState() ([]byte, bool, error) {
+	updated, stats, errStrip := p.stripRouteBoundStateWithStats()
+	return updated, stats.changed(), errStrip
+}
+
+func (p payloadInspection) stripRouteBoundStateWithStats() ([]byte, sanitizeStats, error) {
+	stats := sanitizeStats{}
 	if !p.Signals.hasRouteBoundState() {
-		return p.Raw, false, nil
+		return p.Raw, stats, nil
 	}
-	changed := false
 	if _, exists := p.Root["previous_response_id"]; exists {
 		delete(p.Root, "previous_response_id")
-		changed = true
+		stats.PreviousResponseIDRemoved = true
 	}
 	if p.InputArray {
 		filtered := make([]json.RawMessage, 0, len(p.InputItems))
@@ -120,37 +135,46 @@ func (p payloadInspection) stripRouteBoundState() ([]byte, bool, error) {
 				continue
 			}
 			switch strings.ToLower(strings.TrimSpace(kind.Type)) {
-			case "reasoning", "compaction":
-				changed = true
+			case "reasoning":
+				stats.ReasoningRemoved++
+				continue
+			case "compaction":
+				stats.CompactionRemoved++
 				continue
 			default:
 				filtered = append(filtered, item)
 			}
 		}
-		if changed {
+		if stats.changed() {
 			rawInput, errMarshal := json.Marshal(filtered)
 			if errMarshal != nil {
-				return nil, false, fmt.Errorf("encode filtered input: %w", errMarshal)
+				return nil, sanitizeStats{}, fmt.Errorf("encode filtered input: %w", errMarshal)
 			}
 			p.Root["input"] = rawInput
 		}
 	}
-	if !changed {
-		return p.Raw, false, nil
+	if !stats.changed() {
+		return p.Raw, stats, nil
 	}
 	updated, errMarshal := json.Marshal(p.Root)
 	if errMarshal != nil {
-		return nil, false, fmt.Errorf("encode sanitized request: %w", errMarshal)
+		return nil, sanitizeStats{}, fmt.Errorf("encode sanitized request: %w", errMarshal)
 	}
-	return updated, true, nil
+	return updated, stats, nil
 }
 
 // stripRetiredRouteBoundItems removes only top-level items already observed on
 // a foreign or unknown route. previous_response_id remains intact because it
 // belongs to the currently selected route on same-route continuations.
 func (p payloadInspection) stripRetiredRouteBoundItems(fingerprints []string) ([]byte, bool, error) {
+	updated, stats, errStrip := p.stripRetiredRouteBoundItemsWithStats(fingerprints)
+	return updated, stats.changed(), errStrip
+}
+
+func (p payloadInspection) stripRetiredRouteBoundItemsWithStats(fingerprints []string) ([]byte, sanitizeStats, error) {
+	stats := sanitizeStats{}
 	if !p.InputArray || len(fingerprints) == 0 {
-		return p.Raw, false, nil
+		return p.Raw, stats, nil
 	}
 	blocked := make(map[string]struct{}, len(fingerprints))
 	for _, fingerprint := range fingerprints {
@@ -159,34 +183,37 @@ func (p payloadInspection) stripRetiredRouteBoundItems(fingerprints []string) ([
 		}
 	}
 	if len(blocked) == 0 {
-		return p.Raw, false, nil
+		return p.Raw, stats, nil
 	}
 
 	filtered := make([]json.RawMessage, 0, len(p.InputItems))
-	changed := false
 	for _, item := range p.InputItems {
-		_, fingerprint, ok := routeBoundInputItem(item)
+		kind, fingerprint, ok := routeBoundInputItem(item)
 		if ok {
 			if _, remove := blocked[fingerprint]; remove {
-				changed = true
+				if kind == "reasoning" {
+					stats.ReasoningRemoved++
+				} else if kind == "compaction" {
+					stats.CompactionRemoved++
+				}
 				continue
 			}
 		}
 		filtered = append(filtered, item)
 	}
-	if !changed {
-		return p.Raw, false, nil
+	if !stats.changed() {
+		return p.Raw, stats, nil
 	}
 	rawInput, errMarshal := json.Marshal(filtered)
 	if errMarshal != nil {
-		return nil, false, fmt.Errorf("encode selectively filtered input: %w", errMarshal)
+		return nil, sanitizeStats{}, fmt.Errorf("encode selectively filtered input: %w", errMarshal)
 	}
 	p.Root["input"] = rawInput
 	updated, errMarshal := json.Marshal(p.Root)
 	if errMarshal != nil {
-		return nil, false, fmt.Errorf("encode selectively sanitized request: %w", errMarshal)
+		return nil, sanitizeStats{}, fmt.Errorf("encode selectively sanitized request: %w", errMarshal)
 	}
-	return updated, true, nil
+	return updated, stats, nil
 }
 
 func likelyContainsRouteBoundState(raw []byte) bool {

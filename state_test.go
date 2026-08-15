@@ -224,6 +224,53 @@ func TestRouteStateRetiresRejectedCompactionWithoutPriorRoute(t *testing.T) {
 	}
 }
 
+func TestRouteStateRejectedCompactionDoesNotPoisonOriginalRoute(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	routeA := routeFingerprint{Digest: "route-a"}
+	routeB := routeFingerprint{Digest: "route-b"}
+	seedCommittedRoute(store, "session-a", routeA)
+	foreign := stateSignals{
+		HasReasoning:     true,
+		HasCompaction:    true,
+		ItemFingerprints: []string{"item-from-a"},
+	}
+
+	rejected := store.prepare("reject-b", "session-a", routeB, true, foreign)
+	if !rejected.Reject || rejected.Strip {
+		t.Fatalf("rejected compaction decision = %#v", rejected)
+	}
+
+	replayA := store.prepare("replay-a", "session-a", routeA, true, foreign)
+	if replayA.Relation != routeRelationSame || replayA.Strip || replayA.Reject || len(replayA.BlockedItemFingerprints) != 0 {
+		t.Fatalf("original route was poisoned by rejected candidate = %#v", replayA)
+	}
+	store.complete(pluginapi.RequestCompletion{RequestID: "replay-a", Outcome: pluginapi.RequestCompletionSucceeded})
+
+	cleanB := store.prepare("clean-b", "session-a", routeB, true, stateSignals{})
+	if cleanB.Reject || cleanB.Strip {
+		t.Fatalf("clean route B decision = %#v", cleanB)
+	}
+	store.complete(pluginapi.RequestCompletion{RequestID: "clean-b", Outcome: pluginapi.RequestCompletionSucceeded})
+
+	replayB := store.prepare("replay-b", "session-a", routeB, true, foreign)
+	if replayB.Relation != routeRelationSame || replayB.Strip || replayB.Reject || len(replayB.BlockedItemFingerprints) != 1 {
+		t.Fatalf("rejected candidate was not protected on route B = %#v", replayB)
+	}
+}
+
+func TestRouteStateUnknownRejectedCompactionDoesNotMutateSession(t *testing.T) {
+	store := newRouteStateStore(testConfig())
+	foreign := stateSignals{HasCompaction: true, ItemFingerprints: []string{"unknown-compaction"}}
+
+	rejected := store.prepare("reject", "session-a", routeFingerprint{}, false, foreign)
+	if !rejected.Reject || rejected.Strip {
+		t.Fatalf("unknown rejected compaction decision = %#v", rejected)
+	}
+	if _, exists := store.sessions["session-a"]; exists {
+		t.Fatalf("unknown rejected compaction mutated session: %#v", store.sessions["session-a"])
+	}
+}
+
 func TestRouteStateExpiresAndBoundsEntries(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig()
