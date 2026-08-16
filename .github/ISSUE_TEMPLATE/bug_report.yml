@@ -1,0 +1,73 @@
+name: Bug report
+description: Report reproducible plugin behavior that is not security-sensitive.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not include credentials, raw request bodies, encrypted reasoning, or
+        conversation text. Report security issues privately through the Security
+        tab.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: v0.2.0
+    validations:
+      required: true
+  - type: input
+    id: cpa-version
+    attributes:
+      label: CLIProxyAPI version
+      placeholder: 7.2.130
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system and architecture.
+      placeholder: Windows 11 amd64
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - CPA plugin store
+        - Manual release archive
+        - Local development build
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest repeatable sequence.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include only privacy-safe plugin records with secrets removed.
+      render: text
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I removed credentials, raw bodies, encrypted content, and conversation text.
+          required: true
+        - label: This report is not a private security vulnerability.
+          required: true

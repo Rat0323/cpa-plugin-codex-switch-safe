@@ -1,0 +1,24 @@
+# Security Policy
+
+## Supported versions
+
+Only the latest release line receives security fixes.
+
+| Version | Supported |
+| --- | --- |
+| `0.2.x` | Yes |
+| `< 0.2` | No |
+
+## Reporting a vulnerability
+
+Use [GitHub private vulnerability reporting](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/security/advisories/new)
+for security-sensitive findings.
+
+Do not open a public issue containing credentials, authorization headers, raw
+CPA request bodies, session identifiers, encrypted reasoning content, or user
+conversation text.
+
+Include the affected plugin and CPA versions, operating system and architecture,
+reproduction steps, expected impact, and sanitized logs where possible. You can
+expect an initial acknowledgment within seven days. Fix timing depends on the
+severity and reproducibility of the report.
