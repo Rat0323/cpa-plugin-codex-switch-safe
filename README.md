@@ -183,6 +183,18 @@ Native builds require a C compiler because CPA loads the Go shared library
 through the native ABI. CI tests the plugin and publishes Linux, macOS, and
 Windows release assets from version tags.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks, pull request
+expectations, and the release process. User-facing changes are tracked in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Security
+
+Report security-sensitive findings through GitHub private vulnerability
+reporting instead of a public issue. See [SECURITY.md](SECURITY.md) for supported
+versions and disclosure guidance.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
