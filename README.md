@@ -1,68 +1,80 @@
-# codex-switch-safe
+# Codex Switch Safe
 
-`codex-switch-safe` is a native CPA request interceptor for Codex Responses
-traffic. It preserves encrypted reasoning state only when CPA selected the same
-credential/model route for the same conversation. When the route is unknown,
-changes, expires, or becomes ambiguous because of cross-route concurrency, the
-plugin removes only top-level `reasoning` and `compaction` input items plus
-`previous_response_id`. Nested `agent_message` content and tool payloads are
-left untouched.
+[![Build](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/actions/workflows/build.yml/badge.svg)](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/Rat0323/cpa-plugin-codex-switch-safe)](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/latest)
+[![License](https://img.shields.io/github/license/Rat0323/cpa-plugin-codex-switch-safe)](LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/Rat0323/cpa-plugin-codex-switch-safe)](go.mod)
 
-The plugin never decrypts or persists raw encrypted reasoning content. It reads
-only the route-bound item fields needed to compute process-local keyed
-fingerprints, passes same-route encrypted reasoning through unchanged, and
-removes it selectively when the route is unsafe. It keeps routing state in
-memory only and fails closed when the request cannot be safely associated with a
-stable session and selected auth identity.
+A native CLIProxyAPI (CPA) request interceptor that prevents Codex encrypted
+reasoning state from crossing credential or model routes during dynamic
+upstream switching.
 
-## Why this exists
+Codex Switch Safe passes encrypted reasoning through unchanged on the same
+selected route. When the route changes, is unknown, expires, or becomes
+ambiguous, it removes only unsafe top-level route-bound state. It never decrypts
+encrypted content and does not alter user prompts, tools, nested agent messages,
+or model selection.
 
-Codex encrypted reasoning is bound to the upstream credential/session that
-created it. An unprefixed dynamic model pool can send the next turn to another
-credential, which causes `invalid_encrypted_content` or
-`thinking_signature_invalid`. Removing route-bound state avoids sending a
-foreign ciphertext to the new upstream, at the cost of asking the model to
-re-establish reasoning for that turn.
+## What it does
 
-## Safety model
+- Preserves valid encrypted reasoning on the same CPA credential/model route.
+- Strips unsafe top-level `reasoning` items and `previous_response_id` before a
+  request reaches a different or unknown route.
+- Blocks unsafe `compaction` by default, or strips it when explicitly configured
+  for availability.
+- Commits route changes only after CPA reports a successful request lifecycle
+  outcome; failed retries and failovers do not advance the route.
+- Keeps bounded, process-local state and emits privacy-safe diagnostics through
+  CPA's existing logging system.
+- Ignores non-Codex targets and leaves unrelated request content untouched.
 
-- Stable session identity: CPA `execution_session_id` first, then Codex
-  session/thread headers, payload metadata, and `prompt_cache_key` fallbacks.
-  Per-turn IDs are ignored.
-- Route identity: CPA `selected_auth_id`, selected model, and `ToFormat: codex`.
-- Retry aware: a request ID keeps only its latest after-auth candidate; a route
-  is committed only after lifecycle outcome `succeeded`. Route-bound item
-  fingerprints are committed for successful candidates; a locally rejected
-  compaction candidate uses only a target-route-scoped barrier, so a failed
-  failover does not retire valid state from the original route.
-- Failover aware: failed, rejected, canceled, and expired attempts do not
-  advance the committed route.
-- Subagent aware: independent execution sessions are isolated. Same-session
-  cross-route concurrency taints the session until a clean successful turn
-  establishes a new route.
-- Compaction: default `block` returns HTTP 409 on an unsafe route change. Set
-  `compaction_policy: strip` only when availability is more important than
-  preserving compaction context.
-- Bounded memory: state is process-local with configurable TTL and entry caps.
-  Each session keeps a bounded retired-item barrier; if it overflows, that
-  session conservatively full-strips top-level reasoning/compaction until its
-  state expires instead of allowing an old item to be forgotten and replayed.
+The plugin cannot decrypt ciphertext from another credential. Its purpose is to
+prevent foreign encrypted state from reaching that credential in the first
+place.
 
-This plugin does not serialize model requests and cannot make ciphertext from a
-different credential decryptable. It deliberately prefers a clean continuation
-over guessing which concurrent result is valid.
+## Quick start
 
-## Installation
+Requirements:
 
-Use CPA's plugin store or place the platform library in the configured `plugins`
-directory. The official store release assets are named:
+- CLIProxyAPI `7.2.130` or later.
+- A release asset matching the CPA host operating system and architecture.
+- A CPA configuration with plugins enabled.
 
-`codex-switch-safe_<version>_<goos>_<goarch>.zip`
+Install Codex Switch Safe from CPA's plugin store when the listing is available,
+or download the appropriate archive from the
+[latest release](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/latest).
+Each archive contains one root-level platform library:
 
-Each archive contains exactly one root-level dynamic library and the release
-contains `checksums.txt`.
+| Platform | Architectures | Library |
+| --- | --- | --- |
+| Windows | `amd64`, `arm64` | `codex-switch-safe.dll` |
+| Linux | `amd64`, `arm64` | `codex-switch-safe.so` |
+| macOS | `amd64`, `arm64` | `codex-switch-safe.dylib` |
 
-Minimum CPA version: `7.2.130` (request lifecycle completion support).
+For a manual installation, extract the library into CPA's configured `plugins`
+directory and restart CPA. Release archives use this naming convention:
+
+```text
+codex-switch-safe_<version>_<goos>_<goarch>.zip
+```
+
+The release also includes `checksums.txt` for SHA-256 verification.
+
+## Behavior
+
+| Request and route state | Default behavior |
+| --- | --- |
+| Non-Codex target | Pass through without intervention |
+| No top-level route-bound state | Pass through unchanged |
+| Encrypted state on the same committed route | Pass through unchanged |
+| Changed or unknown route | Strip reasoning and prior response ID |
+| Unsafe compaction (`block`) | Return HTTP 409 |
+| Unsafe compaction (`strip`) | Strip and continue |
+| Failed lifecycle attempt | Do not commit the route |
+| Successful lifecycle attempt | Commit the route |
+
+Only top-level Responses input items are inspected for removal. Nested
+`agent_message` content and tool payloads are not rewritten.
 
 ## Configuration
 
@@ -79,37 +91,84 @@ plugins:
       diagnostics: actions
 ```
 
-`compaction_policy` is `block` or `strip`; `block` is the recommended default.
-`block` rejects a route change when the request carries foreign compaction
-state, while `strip` drops that state and continues. `state_ttl` accepts `1m`
-through `24h`. `max_sessions` and `max_pending` are bounded-memory tuning
-controls and should normally remain at their defaults.
+| Field | Default | Accepted values | Purpose |
+| --- | --- | --- | --- |
+| `enabled` | `true` | `true`, `false` | Plugin instance toggle |
+| `compaction_policy` | `block` | `block`, `strip` | Compaction handling |
+| `state_ttl` | `4h` | `1m` through `24h` | Route binding lifetime |
+| `max_sessions` | `4096` | `1` through `65536` | Session entry cap |
+| `max_pending` | `8192` | `1` through `65536` | Pending attempt cap |
+| `diagnostics` | `actions` | `off`, `actions`, `debug` | Plugin logging level |
 
-`diagnostics` controls privacy-safe structured records written through CPA's
-existing logging system:
+`block` is the recommended compaction policy. It avoids silently discarding
+compaction context. Use `strip` only when continuing without that context is
+preferable to returning a conflict.
 
-- `actions` (default) records only protection actions such as route-state
-  stripping, compaction blocking, and their final lifecycle outcomes.
-- `debug` also records safe pass-through decisions for troubleshooting.
-- `off` disables plugin diagnostics.
+CPA `7.2.130` exposes plugin-owned configuration fields without a separate
+default-value property. Management screens may therefore display these fields as
+blank until an override is saved. Blank or omitted fields are valid: the plugin
+applies the runtime defaults shown above.
+
+The CPA plugin priority controls interceptor order. If another request
+interceptor rewrites Codex request bodies, give Codex Switch Safe a lower
+priority so it runs afterward and performs the final safety check.
+
+## Diagnostics and privacy
+
+| Level | Records |
+| --- | --- |
+| `off` | No plugin diagnostics |
+| `actions` | Protection actions and their final lifecycle outcomes |
+| `debug` | Everything in `actions`, plus safe pass-through decisions |
+
+`actions` is the default and is suitable for normal operation. Use `debug` for
+short-term troubleshooting when you need to confirm whether the plugin observed
+and passed or sanitized a request.
 
 Diagnostics include the CPA request ID, action, outcome, removal counts, and
 short process-local HMAC references for route/session correlation. They never
-include API keys, raw selected-auth IDs, raw session/thread/conversation IDs,
-request bodies, encrypted content, reasoning text, or user conversation text.
-CPA's standard text formatter intentionally renders only a fixed subset of
-structured fields, so the action, outcome, and removal counts are also emitted
-as stable `key=value` pairs in the diagnostic message. The same fields remain
-attached to the host log record for integrations that consume structured logs.
+include:
 
-The CPA plugin priority controls interceptor order. When other request
-interceptor plugins rewrite Codex request bodies, give this plugin a lower
-priority so it runs after those rewrites and performs the final safety check.
+- API keys or authorization headers.
+- Raw selected-auth, session, thread, or conversation IDs.
+- Request bodies, encrypted content, reasoning text, or user conversation text.
 
-The plugin has no network access, does not write files, and never stores raw
-request bodies, tokens, authorization headers, or encrypted content. It uses a
-random process-local HMAC key to compare opaque top-level item fingerprints and
-to produce non-persistent diagnostic references.
+The plugin has no network access and does not write files. It stores routing
+state only in memory and uses a random process-local HMAC key for opaque item
+fingerprints and diagnostic references. References cannot be correlated across
+CPA restarts.
+
+## Safety model
+
+- **Stable session identity:** CPA `execution_session_id` first, then Codex
+  session/thread headers, payload metadata, and `prompt_cache_key` fallbacks.
+  Per-turn IDs are ignored.
+- **Route identity:** CPA `selected_auth_id`, selected model, and
+  `ToFormat: codex`.
+- **Retry-aware lifecycle:** a request ID keeps only its latest after-auth
+  candidate, and a route is committed only after outcome `succeeded`.
+- **Failover safety:** failed, rejected, canceled, and expired attempts do not
+  advance the committed route.
+- **Concurrency isolation:** independent execution sessions remain isolated.
+  Same-session cross-route concurrency taints the session until a clean
+  successful turn establishes a new route.
+- **Bounded memory:** configurable TTL and entry caps constrain process-local
+  state. An overflowed retired-item barrier causes conservative full stripping
+  for that session until its state expires.
+
+The plugin does not serialize model requests. It deliberately prefers a clean
+continuation over guessing which concurrent result is valid.
+
+## Limitations
+
+The plugin cannot distinguish a server-side key rotation that reuses the same
+CPA auth ID until the upstream reports an invalid signature. On that signal it
+invalidates the matching in-memory route and forces the next continuation to be
+clean.
+
+Removing route-bound state can reduce available reasoning context for a turn,
+but it does not change the user prompt, tools, subagent messages, or model
+selection. Process-local routing state is reset whenever CPA restarts.
 
 ## Development
 
@@ -120,17 +179,9 @@ $go = 'C:\Program Files\Go\bin\go.exe'
 & $go vet ./...
 ```
 
-Native builds require a C compiler because CPA loads the Go shared library via
-the native ABI. CI produces Linux, macOS, and Windows release assets.
-
-## Limitations
-
-The plugin cannot distinguish a server-side key rotation that reuses the same
-CPA auth ID until the upstream reports an invalid signature. On that signal it
-invalidates the matching in-memory route and forces the next continuation to be
-clean. Removing route-bound state can reduce available reasoning context for a
-turn, but it does not change the user prompt, tools, subagent messages, or model
-selection.
+Native builds require a C compiler because CPA loads the Go shared library
+through the native ABI. CI tests the plugin and publishes Linux, macOS, and
+Windows release assets from version tags.
 
 ## License
 
