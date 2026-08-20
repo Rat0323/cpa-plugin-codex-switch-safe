@@ -28,7 +28,9 @@ jobs:
           cache: true
       - name: Test
         run: |
-          go test ./...
+          CGO_ENABLED=0 go test ./...
+          CGO_ENABLED=1 go test ./...
+          go test ./.github/scripts
           go test ./.github/scripts/extract-release-notes
       - name: Race detector
         run: go test -race ./...
@@ -79,6 +81,7 @@ jobs:
             VERSION="0.0.0-dev"
           fi
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
           echo "LIB_NAME=${PLUGIN_ID}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
           echo "ARCHIVE_NAME=${PLUGIN_ID}_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip" >> "${GITHUB_ENV}"
       - name: Build shared library
@@ -95,6 +98,11 @@ jobs:
           -library "dist/${LIB_NAME}"
           -archive "${ARCHIVE_NAME}"
           -checksum "${ARCHIVE_NAME}.sha256"
+          -manifest "${ARCHIVE_NAME}.artifact.json"
+          -version "${VERSION}"
+          -goos "${{ matrix.goos }}"
+          -goarch "${{ matrix.goarch }}"
+          -source-commit "${SOURCE_COMMIT}"
       - name: Upload release artifact
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -103,6 +111,7 @@ jobs:
           path: |
             ${{ env.ARCHIVE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256
+            ${{ env.ARCHIVE_NAME }}.artifact.json
 
   build-windows-arm64:
     needs: test
@@ -122,6 +131,7 @@ jobs:
             VERSION="0.0.0-dev"
           fi
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "ARCHIVE_NAME=${PLUGIN_ID}_${VERSION}_windows_arm64.zip" >> "${GITHUB_ENV}"
       - uses: go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a # v1
@@ -141,7 +151,12 @@ jobs:
           go run ./.github/scripts/package-release.go \
             -library "dist/windows-arm64/${PLUGIN_ID}.dll" \
             -archive "${ARCHIVE_NAME}" \
-            -checksum "${ARCHIVE_NAME}.sha256"
+            -checksum "${ARCHIVE_NAME}.sha256" \
+            -manifest "${ARCHIVE_NAME}.artifact.json" \
+            -version "${VERSION}" \
+            -goos "windows" \
+            -goarch "arm64" \
+            -source-commit "${SOURCE_COMMIT}"
       - name: Upload release artifact
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -150,6 +165,7 @@ jobs:
           path: |
             ${{ env.ARCHIVE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256
+            ${{ env.ARCHIVE_NAME }}.artifact.json
 
   ci:
     if: always()
@@ -199,14 +215,33 @@ jobs:
 
           test "$(find dist -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 6
           test "$(find dist -maxdepth 1 -type f -name '*.sha256' | wc -l)" -eq 6
+          test "$(find dist -maxdepth 1 -type f -name '*.artifact.json' | wc -l)" -eq 6
           sort dist/*.sha256 > dist/checksums.txt
           (cd dist && sha256sum -c checksums.txt)
+
+          jq -s 'sort_by(.goos, .goarch)' dist/*.artifact.json > dist/artifact-manifest.json
+          jq -e --arg version "${VERSION}" --arg commit "$(git rev-parse HEAD)" \
+            'length == 6 and
+             all(.[]; .schema_version == 1 and .version == $version and .source_commit == $commit) and
+             (map(.goos + "/" + .goarch) | unique | length) == 6 and
+             (map(.archive) | unique | length) == 6' \
+            dist/artifact-manifest.json >/dev/null
+          while IFS= read -r manifest; do
+            archive="$(jq -r '.archive' "${manifest}")"
+            library="$(jq -r '.library' "${manifest}")"
+            expected_archive="$(jq -r '.archive_sha256' "${manifest}")"
+            expected_library="$(jq -r '.library_sha256' "${manifest}")"
+            expected_size="$(jq -r '.library_size' "${manifest}")"
+            test "$(sha256sum "dist/${archive}" | cut -d' ' -f1)" = "${expected_archive}"
+            test "$(unzip -p "dist/${archive}" "${library}" | sha256sum | cut -d' ' -f1)" = "${expected_library}"
+            test "$(unzip -p "dist/${archive}" "${library}" | wc -c)" -eq "${expected_size}"
+          done < <(find dist -maxdepth 1 -type f -name '*.artifact.json' | sort)
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            dist/*.zip dist/checksums.txt \
+            dist/*.zip dist/checksums.txt dist/artifact-manifest.json \
             --draft \
             --verify-tag \
             --title "Codex Switch Safe ${GITHUB_REF_NAME}" \
@@ -218,6 +253,7 @@ jobs:
           {
             find dist -maxdepth 1 -type f -name '*.zip' -printf '%f\n'
             echo checksums.txt
+            echo artifact-manifest.json
           } | sort > dist/expected-assets.txt
 
           gh release view "${GITHUB_REF_NAME}" \

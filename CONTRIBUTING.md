@@ -23,6 +23,12 @@ $go = 'C:\Program Files\Go\bin\go.exe'
 Native shared-library builds require a C compiler. Pull requests run tests and
 all six supported platform builds in GitHub Actions.
 
+The local `dist/` and `smoke/plugins/` directories are disposable build output.
+They are intentionally ignored and are not release evidence. GitHub Release
+assets are authoritative. Each release includes `checksums.txt` for archives
+and `artifact-manifest.json` for the SHA-256 and size of the library inside
+each archive, along with its source commit.
+
 ## Pull requests
 
 - Explain the behavior change and its safety implications.

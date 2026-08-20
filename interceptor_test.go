@@ -61,6 +61,27 @@ func TestInterceptorBlocksUnsafeCompactionByDefault(t *testing.T) {
 	}
 }
 
+func TestInterceptorStripsUnsafeCompactionWhenConfigured(t *testing.T) {
+	p, errBuild := buildPlugin([]byte("enabled: true\ncompaction_policy: strip\n"))
+	if errBuild != nil {
+		t.Fatal(errBuild)
+	}
+	seed := codexRequest("seed", "session-a", "thread-a", "auth-a", "gpt-5.6-a", `{"input":[{"type":"message","role":"user","content":"hi"}]}`)
+	p.InterceptRequestAfterAuth(nil, seed)
+	p.HandleRequestComplete(nil, pluginapi.RequestCompletion{RequestID: "seed", Outcome: pluginapi.RequestCompletionSucceeded})
+	request := codexRequest("compact", "session-a", "thread-a", "auth-b", "gpt-5.6-b", `{"previous_response_id":"resp-a","input":[{"type":"reasoning","encrypted_content":"foreign-reasoning"},{"type":"compaction","encrypted_content":"foreign-compaction"},{"type":"message","role":"user","content":"continue"}]}`)
+	resp, errIntercept := p.InterceptRequestAfterAuth(nil, request)
+	if errIntercept != nil || resp.Terminate {
+		t.Fatalf("compaction response = %#v, err=%v", resp, errIntercept)
+	}
+	if strings.Contains(string(resp.Body), "previous_response_id") || strings.Contains(string(resp.Body), `"type":"reasoning"`) || strings.Contains(string(resp.Body), `"type":"compaction"`) {
+		t.Fatalf("route-bound state survived: %s", resp.Body)
+	}
+	if !strings.Contains(string(resp.Body), "continue") {
+		t.Fatalf("user message was removed: %s", resp.Body)
+	}
+}
+
 func TestInterceptorRemovesRetiredReasoningOnLaterSameRouteRequest(t *testing.T) {
 	p, errBuild := buildPlugin([]byte("enabled: true\n"))
 	if errBuild != nil {

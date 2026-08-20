@@ -6,6 +6,15 @@ matching version section verbatim.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-21
+
+### Maintenance
+
+- Made pure-Go unit tests compile without a host C ABI, so CI explicitly tests
+  both `CGO_ENABLED=0` and `CGO_ENABLED=1` configurations.
+- Added release artifact manifests containing the source commit plus archive
+  and packaged-library SHA-256 hashes for installed-binary verification.
+
 ## [0.2.0] - 2026-08-15
 
 ### Highlights
@@ -59,7 +68,8 @@ matching version section verbatim.
 Initial release. This version is deprecated because retry and session edge cases
 were corrected in `v0.1.1`.
 
-[Unreleased]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/tag/v0.1.0

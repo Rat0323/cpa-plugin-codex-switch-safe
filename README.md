@@ -58,7 +58,9 @@ directory and restart CPA. Release archives use this naming convention:
 codex-switch-safe_<version>_<goos>_<goarch>.zip
 ```
 
-The release also includes `checksums.txt` for SHA-256 verification.
+The release also includes `checksums.txt` for archive verification and
+`artifact-manifest.json` for the source commit, packaged-library size, and
+packaged-library SHA-256.
 
 ## Behavior
 
@@ -103,6 +105,21 @@ plugins:
 `block` is the recommended compaction policy. It avoids silently discarding
 compaction context. Use `strip` only when continuing without that context is
 preferable to returning a conflict.
+
+The policies differ only when unsafe top-level `compaction` is present. They
+handle ordinary encrypted reasoning and same-route continuations identically:
+
+| Situation | `block` | `strip` |
+| --- | --- | --- |
+| Same committed credential/model route | Preserve route-bound state and continue | Preserve route-bound state and continue |
+| Changed/unknown route with reasoning but no compaction | Strip unsafe reasoning and prior response ID, then continue | Strip unsafe reasoning and prior response ID, then continue |
+| Changed/unknown route with compaction | Return HTTP 409 without sending the request upstream | Strip reasoning, compaction, and prior response ID, then continue |
+| Main tradeoff | Maximum continuity safety; the turn may require retrying on the original route or starting clean | Higher availability; compressed context may be discarded on a route switch |
+
+`block` is appropriate when preserving compressed conversation context matters
+more than completing the current turn. `strip` is appropriate when automatic
+credential failover should keep working even if the new route must continue
+without the old route's compressed state.
 
 CPA `7.2.130` exposes plugin-owned configuration fields without a separate
 default-value property. Management screens may therefore display these fields as

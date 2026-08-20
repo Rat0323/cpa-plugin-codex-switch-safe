@@ -1,5 +1,5 @@
 PLUGIN_NAME ?= codex-switch-safe
-VERSION ?= 0.2.0
+VERSION ?= 0.2.1
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 GO_LDFLAGS ?= -s -w -X main.pluginVersion=$(VERSION)
@@ -26,8 +26,16 @@ build:
 
 package: build
 	@version=$(VERSION); archive=$(PLUGIN_NAME)_$${version}_$(GOOS)_$(GOARCH).zip; \
-	go run ./.github/scripts/package-release.go -library "$(PLUGIN_OUTPUT)" -archive "$${archive}" -checksum "$${archive}.sha256"
+	go run ./.github/scripts/package-release.go \
+		-library "$(PLUGIN_OUTPUT)" \
+		-archive "$${archive}" \
+		-checksum "$${archive}.sha256" \
+		-manifest "$${archive}.artifact.json" \
+		-version "$${version}" \
+		-goos "$(GOOS)" \
+		-goarch "$(GOARCH)" \
+		-source-commit "$$(git rev-parse HEAD)"
 
 clean:
 	rm -rf dist
-	rm -f $(PLUGIN_NAME)_*.zip $(PLUGIN_NAME)_*.sha256 checksums.txt
+	rm -f $(PLUGIN_NAME)_*.zip $(PLUGIN_NAME)_*.sha256 $(PLUGIN_NAME)_*.artifact.json checksums.txt artifact-manifest.json
