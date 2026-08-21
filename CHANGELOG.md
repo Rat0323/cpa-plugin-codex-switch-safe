@@ -8,12 +8,53 @@ matching version section verbatim.
 
 ## [0.2.1] - 2026-08-21
 
-### Maintenance
+### Maintenance release
 
-- Made pure-Go unit tests compile without a host C ABI, so CI explicitly tests
-  both `CGO_ENABLED=0` and `CGO_ENABLED=1` configurations.
-- Added release artifact manifests containing the source commit plus archive
-  and packaged-library SHA-256 hashes for installed-binary verification.
+This release has no runtime behavior or configuration changes and requires no
+migration. It retains the `0.2.0` route-safety behavior and continues to require
+CLIProxyAPI `7.2.130` or later. Users already running `0.2.0` successfully may
+treat this as an optional maintenance upgrade.
+
+### Changes
+
+- CI now tests both pure-Go (`CGO_ENABLED=0`) and native (`CGO_ENABLED=1`)
+  configurations, including race detection and vet checks. Production shared
+  libraries continue to use CGO and the CPA host ABI.
+- Added `artifact-manifest.json` with the source commit, archive SHA-256,
+  packaged-library SHA-256, and library size for integrity verification.
+- Hardened the release workflow with least-privilege permissions, pinned GitHub
+  Actions, metadata checks, and validation of all six platform assets before
+  publication.
+- Expanded installation, configuration, diagnostics, security, and contribution
+  documentation.
+- Added regression coverage for `compaction_policy: strip`.
+
+### Compatibility
+
+- No breaking changes or configuration migration are required.
+- CLIProxyAPI `7.2.130` or later remains required.
+- Release assets support Windows, Linux, and macOS on `amd64` and `arm64`.
+
+### Verification and installation
+
+Download the archive matching the CPA host together with `checksums.txt` and
+`artifact-manifest.json`. Calculate the archive hash with `sha256sum` on Linux,
+`shasum -a 256` on macOS, or `Get-FileHash -Algorithm SHA256` on PowerShell,
+then compare it with the matching entry in `checksums.txt`. After verification,
+replace the existing plugin library and restart CPA.
+
+See the [installation guide](https://github.com/Rat0323/cpa-plugin-codex-switch-safe#quick-start)
+for platform library names and configuration details.
+
+The checksum and manifest files verify artifact integrity and identify the
+source commit; they are not signed provenance or reproducible-build attestations.
+
+### Rollback
+
+To roll back, install the matching `0.2.0` archive and restart CPA. Process-local
+routing state is reset when CPA restarts.
+
+Full diff: [v0.2.0...v0.2.1](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/compare/v0.2.0...v0.2.1)
 
 ## [0.2.0] - 2026-08-15
 
