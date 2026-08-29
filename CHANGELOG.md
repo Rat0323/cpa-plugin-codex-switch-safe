@@ -6,6 +6,11 @@ matching version section verbatim.
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored native plugin registration with CLIProxyAPI schema 4 hosts while
+  preserving schema 3 compatibility.
+
 ## [0.2.1] - 2026-08-21
 
 ### Maintenance release
