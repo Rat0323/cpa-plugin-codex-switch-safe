@@ -18,6 +18,35 @@ env:
   PLUGIN_ID: codex-switch-safe
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      native_builds: ${{ steps.classify.outputs.native_builds }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Classify changes
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          native_builds=true
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            native_builds=false
+            changed_files="$(git diff --name-only --no-renames "${BASE_SHA}" "${HEAD_SHA}")"
+            while IFS= read -r path; do
+              [[ -z "${path}" ]] && continue
+              case "${path}" in
+                *.md|docs/*) ;;
+                *) native_builds=true; break ;;
+              esac
+            done <<< "${changed_files}"
+          fi
+          echo "native_builds=${native_builds}" >> "${GITHUB_OUTPUT}"
+
   test:
     runs-on: ubuntu-24.04
     steps:
@@ -38,7 +67,8 @@ jobs:
         run: go vet ./...
 
   build:
-    needs: test
+    needs: [changes, test]
+    if: needs.changes.outputs.native_builds == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -114,7 +144,8 @@ jobs:
             ${{ env.ARCHIVE_NAME }}.artifact.json
 
   build-windows-arm64:
-    needs: test
+    needs: [changes, test]
+    if: needs.changes.outputs.native_builds == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,18 +200,26 @@ jobs:
 
   ci:
     if: always()
-    needs: [test, build, build-windows-arm64]
+    needs: [changes, test, build, build-windows-arm64]
     runs-on: ubuntu-24.04
     steps:
       - name: Verify required jobs
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          NATIVE_BUILDS: ${{ needs.changes.outputs.native_builds }}
           TEST_RESULT: ${{ needs.test.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           WINDOWS_ARM64_RESULT: ${{ needs.build-windows-arm64.result }}
         run: |
+          test "${CHANGES_RESULT}" = "success"
           test "${TEST_RESULT}" = "success"
-          test "${BUILD_RESULT}" = "success"
-          test "${WINDOWS_ARM64_RESULT}" = "success"
+          if [[ "${NATIVE_BUILDS}" == "true" ]]; then
+            test "${BUILD_RESULT}" = "success"
+            test "${WINDOWS_ARM64_RESULT}" = "success"
+          else
+            test "${BUILD_RESULT}" = "skipped"
+            test "${WINDOWS_ARM64_RESULT}" = "skipped"
+          fi
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
