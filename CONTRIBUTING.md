@@ -20,8 +20,11 @@ $go = 'C:\Program Files\Go\bin\go.exe'
 & $go vet ./...
 ```
 
-Native shared-library builds require a C compiler. Pull requests run tests and
-all six supported platform builds in GitHub Actions.
+Native shared-library builds require a C compiler. Pull requests always run
+tests and the aggregate `ci` check in GitHub Actions. Pull requests that change
+only Markdown files or files under `docs/` skip the six native platform builds;
+code and configuration changes run the full build matrix. Version tags and
+manual workflow runs always build all supported platforms.
 
 The local `dist/` and `smoke/plugins/` directories are disposable build output.
 They are intentionally ignored and are not release evidence. GitHub Release
