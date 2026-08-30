@@ -6,10 +6,17 @@ matching version section verbatim.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-30
+
 ### Fixed
 
 - Restored native plugin registration with CLIProxyAPI schema 4 hosts while
   preserving schema 3 compatibility.
+
+### Compatibility
+
+- No configuration migration is required.
+- CLIProxyAPI `7.2.130` or later remains supported.
 
 ## [0.2.1] - 2026-08-21
 
@@ -114,7 +121,8 @@ Full diff: [v0.2.0...v0.2.1](https://github.com/Rat0323/cpa-plugin-codex-switch-
 Initial release. This version is deprecated because retry and session edge cases
 were corrected in `v0.1.1`.
 
-[Unreleased]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/tag/v0.1.1
