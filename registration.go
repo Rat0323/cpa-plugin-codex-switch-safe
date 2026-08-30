@@ -13,9 +13,9 @@ type abiCapabilities struct {
 	RequestLifecyclePlugin bool `json:"request_lifecycle_plugin"`
 }
 
-func pluginRegistration() abiRegistration {
+func pluginRegistration(schemaVersion uint32) abiRegistration {
 	return abiRegistration{
-		SchemaVersion: pluginSchemaVersion,
+		SchemaVersion: schemaVersion,
 		Metadata:      pluginMetadata(),
 		Capabilities: abiCapabilities{
 			RequestInterceptor:     true,

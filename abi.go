@@ -276,7 +276,7 @@ func handlePluginLifecycle(request []byte) ([]byte, error) {
 	}
 	switchSafeABIState.plugin = p
 	switchSafeABIState.Unlock()
-	return abiOKEnvelope(pluginRegistration())
+	return abiOKEnvelope(pluginRegistration(req.SchemaVersion))
 }
 
 func beginPluginCall() (*switchSafePlugin, func(), error) {
