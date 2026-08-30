@@ -36,15 +36,20 @@ each archive, along with its source commit.
   changes.
 - Update README configuration or diagnostics documentation when behavior changes.
 - Add user-facing changes under `[Unreleased]` in `CHANGELOG.md`.
-- Keep version bumps in a dedicated release-preparation pull request.
+- When a change will be released immediately, its final pull request may also
+  prepare the release metadata. Use a dedicated release-preparation pull request
+  when batching multiple changes or preparing a release separately.
 
 ## Releases
 
-A release-preparation pull request moves relevant changelog entries from
-`[Unreleased]` into a dated version section and synchronizes the version in
-`main.go`, `Makefile`, and `marketplace/registry-entry.json`.
+Before release, move the relevant changelog entries from `[Unreleased]` into a
+dated version section and synchronize the version in `main.go`, `Makefile`, and
+`marketplace/registry-entry.json`. These updates may be included in the final
+change pull request for an immediate release or in a dedicated
+release-preparation pull request.
 
-After that pull request is merged and verified, create and push the matching
-`v<version>` tag. The release workflow validates metadata and checksums, creates
-a draft release, uploads all platform assets, verifies the asset list, and then
+After the pull request containing the release metadata is merged and its checks
+pass, create and push the matching `v<version>` tag from the verified `main`
+commit. The release workflow validates metadata and checksums, creates a draft
+release, uploads all platform assets, verifies the asset list, and then
 publishes it.
