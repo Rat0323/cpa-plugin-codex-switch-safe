@@ -262,8 +262,9 @@ func handlePluginLifecycle(request []byte) ([]byte, error) {
 	if req.SchemaVersion < 2 {
 		return nil, fmt.Errorf("%s requires host schema version 2 or newer", pluginID)
 	}
-	if req.SchemaVersion > pluginSchemaVersion {
-		return nil, fmt.Errorf("%s does not support host schema version %d", pluginID, req.SchemaVersion)
+	schemaVersion := req.SchemaVersion
+	if schemaVersion > pluginSchemaVersion {
+		schemaVersion = pluginSchemaVersion
 	}
 	p, errBuild := buildPlugin(req.ConfigYAML)
 	if errBuild != nil {
@@ -276,7 +277,7 @@ func handlePluginLifecycle(request []byte) ([]byte, error) {
 	}
 	switchSafeABIState.plugin = p
 	switchSafeABIState.Unlock()
-	return abiOKEnvelope(pluginRegistration(req.SchemaVersion))
+	return abiOKEnvelope(pluginRegistration(schemaVersion))
 }
 
 func beginPluginCall() (*switchSafePlugin, func(), error) {
