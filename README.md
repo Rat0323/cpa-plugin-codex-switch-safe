@@ -1,21 +1,35 @@
 # Codex Switch Safe
 
+[English](README.md) | [简体中文](README_CN.md)
+
 [![Build](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/actions/workflows/build.yml/badge.svg)](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/actions/workflows/build.yml)
 [![Latest release](https://img.shields.io/github/v/release/Rat0323/cpa-plugin-codex-switch-safe)](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/latest)
 [![License](https://img.shields.io/github/license/Rat0323/cpa-plugin-codex-switch-safe)](LICENSE)
 [![Go version](https://img.shields.io/github/go-mod/go-version/Rat0323/cpa-plugin-codex-switch-safe)](go.mod)
 
-A native CLIProxyAPI (CPA) request interceptor that prevents Codex encrypted
-reasoning state from crossing credential or model routes during dynamic
-upstream switching.
+A native CLIProxyAPI (CPA) interceptor for safe Codex credential and model
+failover. It preserves encrypted context on the same route and prevents
+route-bound state from crossing into a different or unknown upstream.
 
-Codex Switch Safe passes encrypted reasoning through unchanged on the same
-selected route. When the route changes, is unknown, expires, or becomes
-ambiguous, it removes only unsafe top-level route-bound state. It never decrypts
-encrypted content and does not alter user prompts, tools, nested agent messages,
-or model selection.
+## Why it exists
 
-## What it does
+Codex requests can contain encrypted `reasoning` and `compaction` state bound to
+the credential and model route that created it. In a multi-account CPA setup,
+round-robin routing, quota exhaustion, failover, configuration reloads, or
+restarts can select a different upstream for an existing conversation:
+
+```text
+Conversation uses credential A
+-> CPA later selects credential B
+-> the request still contains encrypted state created on A
+-> B cannot safely reuse that state
+-> the request fails or the conversation must restart cleanly
+```
+
+Codex Switch Safe adds the missing route-awareness before the request reaches
+the selected upstream.
+
+## How it protects requests
 
 - Preserves valid encrypted reasoning on the same CPA credential/model route.
 - Strips unsafe top-level `reasoning` items and `previous_response_id` before a
@@ -28,9 +42,38 @@ or model selection.
   CPA's existing logging system.
 - Ignores non-Codex targets and leaves unrelated request content untouched.
 
-The plugin cannot decrypt ciphertext from another credential. Its purpose is to
-prevent foreign encrypted state from reaching that credential in the first
-place.
+The plugin never decrypts encrypted content and does not alter user prompts,
+tools, nested agent messages, or model selection.
+
+Codex Switch Safe is a route-safety boundary, not a cross-credential context
+migration system. It cannot decrypt state created by one credential or
+re-encrypt it for another.
+
+## Choose a compaction policy
+
+| Goal | Policy | Result |
+| --- | --- | --- |
+| Never discard compressed context silently | `block` (default) | Reject an unsafe switch with HTTP 409 |
+| Keep automatic failover running | `strip` | Remove old route-bound context and continue on the new route |
+
+Both policies preserve encrypted context unchanged when the committed
+credential and model route remains the same.
+
+## HTTP 409 is a protection action
+
+If Codex reports:
+
+```text
+Codex compaction belongs to a different or unknown upstream credential.
+```
+
+the plugin found compaction state that it could not verify against the selected
+route. The request was rejected locally before that state was sent upstream.
+This means the protection worked; it does not mean the interceptor crashed.
+
+To continue, retry on the original credential, start a clean conversation, or
+set `compaction_policy: strip` and accept that the old compressed context will
+be removed.
 
 ## Quick start
 
@@ -40,8 +83,8 @@ Requirements:
 - A release asset matching the CPA host operating system and architecture.
 - A CPA configuration with plugins enabled.
 
-Install Codex Switch Safe from CPA's plugin store when the listing is available,
-or download the appropriate archive from the
+Install Codex Switch Safe from CPA's plugin store, or download the appropriate
+archive from the
 [latest release](https://github.com/Rat0323/cpa-plugin-codex-switch-safe/releases/latest).
 Each archive contains one root-level platform library:
 
