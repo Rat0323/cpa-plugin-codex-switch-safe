@@ -25,8 +25,9 @@ func TestABIRegistrationAdvertisesLifecycleAndSchema(t *testing.T) {
 	}{
 		{name: "CPA 7.2.130 schema 3", schemaVersion: 3, wantVersion: 3},
 		{name: "CPA 7.2.145 schema 4", schemaVersion: 4, wantVersion: 4},
-		{name: "CPA 7.2.151 schema 5", schemaVersion: 5, wantVersion: pluginSchemaVersion},
-		{name: "future schema 6", schemaVersion: 6, wantVersion: pluginSchemaVersion},
+		{name: "CPA 7.2.151 schema 5", schemaVersion: 5, wantVersion: 5},
+		{name: "current schema", schemaVersion: pluginSchemaVersion, wantVersion: pluginSchemaVersion},
+		{name: "future schema", schemaVersion: pluginSchemaVersion + 1, wantVersion: pluginSchemaVersion},
 		{name: "schema 0", schemaVersion: 0, wantError: true},
 		{name: "schema 1", schemaVersion: 1, wantError: true},
 	} {
